@@ -34,7 +34,7 @@ jobs:
         run: |
           for log in /tmp/check.log /tmp/lib.log /tmp/it.log; do
             [ -f "$log" ] || continue
-            grep -E "^test .* FAILED|^error(\[E[0-9]+\])?:|^error: " "$log" | head -25 |
+            grep -E "^test .* FAILED|^error(\[E[0-9]+\])?:|^error: |^warning: unused" "$log" | head -25 |
               while IFS= read -r line; do
                 echo "::error title=ci::$line"
               done
@@ -42,6 +42,10 @@ jobs:
               while IFS= read -r line; do
                 echo "::error title=ci-failures::$line"
               done
+            # Fallback: dump the raw tail so the failure is always visible.
+            tail -25 "$log" | while IFS= read -r line; do
+              echo "::error title=tail::$line"
+            done
           done
           exit 0
       - name: cargo clippy
