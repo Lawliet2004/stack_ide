@@ -197,13 +197,18 @@ impl VimState {
     ) -> VimResult {
         let mut result = VimResult::default();
         match self.mode {
-            VimMode::Insert => self.process_insert(input, &mut result),
-            VimMode::Normal => self.process_normal(buffer, input, options, &mut result),
+            VimMode::Insert => self.process_insert(buffer, input, &mut result),
+            VimMode::Normal => {
+                self.process_normal(buffer, input, options, &mut result);
+                result.consumed = true;
+            }
             VimMode::Visual | VimMode::VisualLine => {
-                self.process_visual(buffer, input, options, &mut result)
+                self.process_visual(buffer, input, options, &mut result);
+                result.consumed = true;
             }
             VimMode::Command | VimMode::Search => {
-                self.process_cmdline(buffer, input, &mut result)
+                self.process_cmdline(buffer, input, &mut result);
+                result.consumed = true;
             }
         }
         result
@@ -211,11 +216,19 @@ impl VimState {
 
     // ─── Insert mode ────────────────────────────────────────────────────────
 
-    fn process_insert(&mut self, input: VimInput, result: &mut VimResult) {
+    fn process_insert(&mut self, buffer: &mut TextBuffer, input: VimInput, result: &mut VimResult) {
         match input {
             VimInput::Key(NamedKey::Escape) => {
+                // Vim steps the caret back off the last inserted position.
+                self.move_horizontal(buffer, -1);
                 self.mode = VimMode::Normal;
                 result.consumed = true;
+            }
+            VimInput::Char(c) => {
+                // Insert typing is owned by the state machine; chars stay
+                // `unconsumed` so the widget knows insert mode is active.
+                let _ = buffer.insert_at_cursors(&c.to_string());
+                result.consumed = false;
             }
             _ => result.consumed = false,
         }
@@ -272,14 +285,16 @@ impl VimState {
     fn execute_search(&mut self, buffer: &mut TextBuffer, line: &str, result: &mut VimResult) {
         let pattern = line.trim().to_owned();
         if pattern.is_empty() {
+            // Empty pattern repeats the last search like plain `n`.
             if let Some(last) = self.last_search.clone() {
-                self.jump_to_next_match(buffer, &last, true);
+                self.jump_to_next_match(buffer, &last, true, false);
             }
             return;
         }
         self.last_search = Some(pattern.clone());
         result.search = Some(pattern.clone());
-        self.jump_to_next_match(buffer, &pattern, true);
+        // A fresh search accepts a match at the cursor position.
+        self.jump_to_next_match(buffer, &pattern, true, true);
     }
 
     // ─── Normal mode ────────────────────────────────────────────────────────
@@ -312,6 +327,44 @@ impl VimState {
             return;
         }
 
+        // Operators and pending starters must not consume the accumulated
+        // count: `2dd`, `2gg`, `2fa`, `3r` apply it when the motion lands.
+        match ch {
+            'd' => {
+                self.pending = Some(Pending::Operator(PendingOperator::Delete));
+                return;
+            }
+            'c' => {
+                self.pending = Some(Pending::Operator(PendingOperator::Change));
+                return;
+            }
+            'y' => {
+                self.pending = Some(Pending::Operator(PendingOperator::Yank));
+                return;
+            }
+            '>' => {
+                self.pending = Some(Pending::Operator(PendingOperator::Indent));
+                return;
+            }
+            '<' => {
+                self.pending = Some(Pending::Operator(PendingOperator::Outdent));
+                return;
+            }
+            'g' => {
+                self.pending = Some(Pending::G);
+                return;
+            }
+            'f' | 'F' | 't' | 'T' => {
+                self.pending = Some(Pending::Find { op: None, kind: ch });
+                return;
+            }
+            'r' => {
+                self.pending = Some(Pending::Replace);
+                return;
+            }
+            _ => {}
+        }
+
         let count = self.take_count();
 
         match ch {
@@ -338,7 +391,6 @@ impl VimState {
             '0' => self.set_col(buffer, 0),
             '^' => self.first_non_blank(buffer),
             '$' => self.end_of_line(buffer),
-            'g' => self.pending = Some(Pending::G),
             'G' => self.goto_line(buffer, if count > 0 { Some(count) } else { None }),
             'w' => self.word_forward(buffer, count, false),
             'W' => self.word_forward(buffer, count, true),
@@ -350,16 +402,13 @@ impl VimState {
             '}' => self.paragraph_move(buffer, count.max(1) as isize),
             'n' => {
                 if let Some(pattern) = self.last_search.clone() {
-                    self.jump_to_next_match(buffer, &pattern, true);
+                    self.jump_to_next_match(buffer, &pattern, true, false);
                 }
             }
             'N' => {
                 if let Some(pattern) = self.last_search.clone() {
-                    self.jump_to_next_match(buffer, &pattern, false);
+                    self.jump_to_next_match(buffer, &pattern, false, false);
                 }
-            }
-            'f' | 'F' | 't' | 'T' => {
-                self.pending = Some(Pending::Find { op: None, kind: ch })
             }
             ';' => {
                 if let Some((target, kind)) = self.last_find {
@@ -380,11 +429,6 @@ impl VimState {
             '%' => self.match_bracket(buffer),
             'x' => self.delete_chars(buffer, count, false),
             'X' => self.delete_chars(buffer, count, true),
-            'd' => self.pending = Some(Pending::Operator(PendingOperator::Delete)),
-            'c' => self.pending = Some(Pending::Operator(PendingOperator::Change)),
-            'y' => self.pending = Some(Pending::Operator(PendingOperator::Yank)),
-            '>' => self.pending = Some(Pending::Operator(PendingOperator::Indent)),
-            '<' => self.pending = Some(Pending::Operator(PendingOperator::Outdent)),
             'D' => self.change_to_eol(buffer, count, false),
             'C' => self.change_to_eol(buffer, count, true),
             's' => {
@@ -398,7 +442,6 @@ impl VimState {
             }
             'p' => self.put(buffer, count, true),
             'P' => self.put(buffer, count, false),
-            'r' => self.pending = Some(Pending::Replace),
             'J' => self.join_below(buffer, count),
             '~' => self.toggle_case_char(buffer, count),
             'u' => {
@@ -432,7 +475,8 @@ impl VimState {
             Pending::G => match ch {
                 'g' => {
                     let count = self.take_count();
-                    self.goto_line(buffer, if count > 0 { Some(count) } else { None });
+                    // Bare `gg` jumps to the first line; `G` handles last.
+                    self.goto_line(buffer, if count > 0 { Some(count) } else { Some(1) });
                     self.pending = None;
                 }
                 'u' => {
@@ -602,7 +646,7 @@ impl VimState {
                 self.finish_motion_operator(buffer, op, cursor, target, false, options);
             }
             'G' => {
-                let target_line = buffer.len_lines().saturating_sub(1);
+                let target_line = last_content_line(buffer);
                 self.pending = None;
                 self.finish_linewise_operator(buffer, op, cursor.line.min(target_line), target_line, options);
             }
@@ -897,7 +941,7 @@ impl VimState {
 
     fn move_vertical(&self, buffer: &mut TextBuffer, delta: isize) {
         let mut position = buffer.cursor();
-        let lines = buffer.len_lines() as isize;
+        let lines = last_content_line(buffer) as isize + 1;
         let new_line = (position.line as isize + delta).clamp(0, lines.saturating_sub(1));
         if new_line == position.line as isize {
             return;
@@ -940,7 +984,7 @@ impl VimState {
     fn goto_line(&self, buffer: &mut TextBuffer, line: Option<usize>) {
         let target = line
             .map(|n| n.saturating_sub(1))
-            .unwrap_or_else(|| buffer.len_lines().saturating_sub(1));
+            .unwrap_or_else(|| last_content_line(buffer));
         let line = target.min(buffer.len_lines().saturating_sub(1));
         self.set_cursor(
             buffer,
@@ -1170,7 +1214,7 @@ impl VimState {
 
     fn open_line(&mut self, buffer: &mut TextBuffer, below: bool, options: VimOptions) {
         let line = buffer.cursor().line;
-        let indent = line_indent(buffer, line, options);
+        let indent = line_indent(buffer, line);
         let newline = if buffer.text().contains("\r\n") { "\r\n" } else { "\n" };
         let line_start = char_offset(buffer, CursorPosition { line, col: 0 });
         let insert_at = if below {
@@ -1805,7 +1849,13 @@ impl VimState {
         }
     }
 
-    fn jump_to_next_match(&mut self, buffer: &mut TextBuffer, pattern: &str, forward: bool) {
+    fn jump_to_next_match(
+        &mut self,
+        buffer: &mut TextBuffer,
+        pattern: &str,
+        forward: bool,
+        include_current: bool,
+    ) {
         // ASCII-only case folding keeps 1:1 char alignment with the raw text,
         // so folded offsets stay valid `char_index_to_position` indices.
         let needle: Vec<char> = pattern.chars().map(|c| c.to_ascii_lowercase()).collect();
@@ -1832,7 +1882,13 @@ impl VimState {
             haystack[offset..offset + needle.len()] == needle[..]
         };
         let mut offset = if forward {
-            (start + 1) % length
+            if include_current {
+                start
+            } else {
+                (start + 1) % length
+            }
+        } else if include_current {
+            start
         } else {
             (start + length - 1) % length
         };
@@ -1869,6 +1925,17 @@ enum CaseOp {
 
 // ─── Free helpers ────────────────────────────────────────────────────────────
 
+/// Index of the last line that has content, skipping the phantom empty
+/// line a trailing newline produces in the rope.
+fn last_content_line(buffer: &TextBuffer) -> usize {
+    let last = buffer.len_lines().saturating_sub(1);
+    if last > 0 && buffer.line_content_len(last).unwrap_or(0) == 0 {
+        last - 1
+    } else {
+        last
+    }
+}
+
 fn clamp_position(buffer: &TextBuffer, position: CursorPosition) -> CursorPosition {
     let line = position.line.min(buffer.len_lines().saturating_sub(1));
     let line_len = buffer.line_content_len(line).unwrap_or(0);
@@ -1901,20 +1968,13 @@ fn line_is_blank(buffer: &TextBuffer, line: usize) -> bool {
         .unwrap_or(true)
 }
 
-fn line_indent(buffer: &TextBuffer, line: usize, options: VimOptions) -> String {
+fn line_indent(buffer: &TextBuffer, line: usize) -> String {
     let Some(text) = buffer.line_text(line) else { return String::new() };
     let indent: String = text
         .chars()
         .take_while(|c| *c == ' ' || *c == '\t')
         .collect();
-    if !indent.is_empty() {
-        return indent;
-    }
-    if options.insert_spaces {
-        " ".repeat(options.tab_width.max(1))
-    } else {
-        "\t".to_owned()
-    }
+    indent
 }
 
 /// Length of the line break terminating `line` (0 or 1 for LF, 2 for CRLF).
@@ -2467,6 +2527,7 @@ mod tests {
     fn daw_deletes_a_word_with_trailing_space() {
         let mut b = buffer("foo bar baz\n");
         let mut v = state();
+        v.process(&mut b, VimInput::Char('w'), options());
         v.process(&mut b, VimInput::Char('d'), options());
         v.process(&mut b, VimInput::Char('a'), options());
         v.process(&mut b, VimInput::Char('w'), options());
@@ -2581,9 +2642,9 @@ mod tests {
         let mut b = buffer("one two one\n");
         let mut v = state();
         chars(&mut b, &mut v, "fo");
-        assert_eq!(cursor(&b), (0, 8));
+        assert_eq!(cursor(&b), (0, 6));
         v.process(&mut b, VimInput::Char(';'), options());
-        assert_eq!(cursor(&b), (0, 10));
+        assert_eq!(cursor(&b), (0, 8));
     }
 
     #[test]

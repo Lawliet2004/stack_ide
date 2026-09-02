@@ -1990,24 +1990,20 @@ fn handle_keyboard_input(
                     continue;
                 }
                 if vim_enabled {
-                    let mut consumed_any = false;
+                    // Vim owns Text events entirely: insert mode inserts via
+                    // the state machine; other modes consume or no-op.
                     for ch in text.chars() {
                         let result = feed_vim(buffer, crate::vim::VimInput::Char(ch), vim_options);
-                        if result.consumed {
-                            consumed_any = true;
-                            if action.is_none() {
-                                if let Some(ex) = result.ex {
-                                    action = Some(EditorAction::VimEx(ex));
-                                } else if let Some(pattern) = result.search {
-                                    action = Some(EditorAction::VimSearch(pattern));
-                                }
+                        if result.consumed && action.is_none() {
+                            if let Some(ex) = result.ex {
+                                action = Some(EditorAction::VimEx(ex));
+                            } else if let Some(pattern) = result.search {
+                                action = Some(EditorAction::VimSearch(pattern));
                             }
                         }
                     }
-                    if consumed_any {
-                        state.scroll_to_cursor = true;
-                        continue;
-                    }
+                    state.scroll_to_cursor = true;
+                    continue;
                 }
                 let _ = buffer.insert_at_cursors(&text);
                 state.preferred_col = None;
