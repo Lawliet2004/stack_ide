@@ -1023,7 +1023,8 @@ impl EditorWidget {
                                     &line,
                                     font_id.clone(),
                                     text_color,
-                                                             );
+                                    weak_text_color,
+                                );
                             } else {
                                 // Normal syntax highlighting
                                 for section in &layout_job.sections {
