@@ -1142,7 +1142,7 @@ impl VimState {
         }
     }
 
-    fn enter_insert(&self, buffer: &mut TextBuffer, at: InsertAt) {
+    fn enter_insert(&mut self, buffer: &mut TextBuffer, at: InsertAt) {
         let position = buffer.cursor();
         let target = match at {
             InsertAt::BeforeCursor => position,
