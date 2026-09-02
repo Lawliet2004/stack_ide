@@ -4851,6 +4851,9 @@ impl BlueIdeApp {
                     if mark.0 != buffer.revision() {
                         mark.0 = buffer.revision();
                         mark.1 = Some(std::time::Instant::now());
+                    } else if mark.1.is_none() {
+                        // First observation of this revision: start the idle timer.
+                        mark.1 = Some(std::time::Instant::now());
                     }
                     if mark
                         .1
