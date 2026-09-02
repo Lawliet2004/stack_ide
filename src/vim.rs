@@ -29,8 +29,9 @@ impl Default for VimOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VimMode {
+    #[default]
     Normal,
     Insert,
     /// Characterwise visual selection.

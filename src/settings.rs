@@ -63,6 +63,7 @@ impl Default for Settings {
             panels: PanelSettings::default(),
             lsp: LspSettings::default(),
             ui: UiSettings::default(),
+            assistant: AssistantSettings::default(),
         }
     }
 }

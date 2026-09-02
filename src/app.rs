@@ -4847,7 +4847,7 @@ impl BlueIdeApp {
                     let mark = self
                         .auto_save_marks
                         .entry(path.clone())
-                        .insert((buffer.revision(), None));
+                        .or_insert((buffer.revision(), None));
                     if mark.0 != buffer.revision() {
                         mark.0 = buffer.revision();
                         mark.1 = Some(std::time::Instant::now());

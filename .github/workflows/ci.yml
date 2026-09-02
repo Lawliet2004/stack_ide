@@ -35,7 +35,7 @@ jobs:
           for log in /tmp/check.log /tmp/lib.log /tmp/it.log; do
             [ -f "$log" ] || continue
             sed 's/\x1b\[[0-9;]*m//g' "$log" > /tmp/plain.log
-            grep -E "^test .* FAILED|^error(\[E[0-9]+\])?:|^error: " /tmp/plain.log | head -30 |
+            grep -E -A2 "^error(\[E[0-9]+\])?:|^error: " /tmp/plain.log | head -30 |
               while IFS= read -r line; do
                 echo "::error title=ci::$line"
               done
