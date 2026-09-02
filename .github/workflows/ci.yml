@@ -8,6 +8,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -45,6 +49,24 @@ jobs:
             grep -iE "signal [0-9]|sigkill|sigsegv|killed|out of memory" /tmp/plain.log | head -2 | emit
           done
           exit 0
+      - name: report failure details as PR comment
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        continue-on-error: true
+        run: |
+          {
+            echo "CI failure report for ${GITHUB_SHA::7}"
+            for log in /tmp/check.log /tmp/libbuild.log /tmp/lib.log /tmp/it.log; do
+              [ -f "$log" ] || continue
+              echo "=== ${log} ==="
+              sed 's/\x1b\[[0-9;]*m//g' "$log" |
+                grep -E "panicked at|^---- |assertion|left:|right:|^error(\[|:)|test result:|^failures:|signal|killed" |
+                head -150
+            done
+          } > /tmp/report.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/report.md
       - name: cargo clippy
         run: cargo clippy --lib -- -D warnings
         continue-on-error: true

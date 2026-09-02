@@ -762,6 +762,9 @@ mod tests {
     #[test]
     fn workspace_collection_respects_ignore_rules_and_skips_target() {
         let root = temp_dir("walk");
+        // `ignore` only honors .gitignore inside a git repository (its
+        // default `require_git`), so give the temp workspace a .git marker.
+        fs::create_dir(root.join(".git")).unwrap();
         fs::create_dir_all(root.join("src/nested")).unwrap();
         fs::create_dir_all(root.join("target/debug")).unwrap();
         fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();

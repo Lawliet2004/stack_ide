@@ -876,10 +876,9 @@ impl VimState {
     }
 
     fn set_cursor(&self, buffer: &mut TextBuffer, position: CursorPosition) {
-        let clamped = clamp_position(buffer, position);
-        buffer.cursors = vec![CursorAnchor::caret(clamped)];
-        buffer.primary = 0;
-        buffer.column_selection = None;
+        // Delegate to the canonical cursor setter so the legacy scalar
+        // cursor, the multi-cursor vec, and bracket matching stay in sync.
+        buffer.set_cursor(position);
     }
 
     fn clamp_cursor(&self, buffer: &mut TextBuffer) {
