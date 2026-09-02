@@ -217,7 +217,8 @@ impl AssistantPanel {
 
     /// Drain completed provider output; call once per frame.
     pub fn poll(&mut self) {
-        let Some(rx) = &self.output_rx else {
+        let mut close = false;
+        let Some(rx) = self.output_rx.as_mut() else {
             return;
         };
         loop {
@@ -239,7 +240,8 @@ impl AssistantPanel {
                     });
                     self.busy = false;
                     self.scroll_to_bottom = true;
-                    self.output_rx = None;
+                    close = true;
+                    break;
                 }
                 Ok(ProviderEvent::Failed(message)) => {
                     let mut content = std::mem::take(&mut self.streaming);
@@ -259,11 +261,12 @@ impl AssistantPanel {
                     }
                     self.busy = false;
                     self.scroll_to_bottom = true;
-                    self.output_rx = None;
+                    close = true;
+                    break;
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
-                    self.output_rx = None;
+                    close = true;
                     if self.busy {
                         // Worker exited without a terminal event (should not
                         // happen, but never wedge the panel).
@@ -272,6 +275,9 @@ impl AssistantPanel {
                     break;
                 }
             }
+        }
+        if close {
+            self.output_rx = None;
         }
     }
 
