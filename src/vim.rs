@@ -633,6 +633,11 @@ impl VimState {
             NamedKey::PageUp => self.move_vertical(buffer, -15),
             NamedKey::PageDown => self.move_vertical(buffer, 15),
             NamedKey::Backspace => self.move_horizontal(buffer, -1),
+            NamedKey::Enter => {
+                // Vim `<CR>`: down one line, then to the first non-blank.
+                self.move_vertical(buffer, 1);
+                self.first_non_blank(buffer);
+            }
             NamedKey::Delete => {
                 let count = self.take_count();
                 self.delete_chars(buffer, count, false);
@@ -1317,7 +1322,7 @@ impl VimState {
         (deleted, false)
     }
 
-    fn transform_visual(&self, buffer: &mut TextBuffer, op: CaseOp) {
+    fn transform_visual(&mut self, buffer: &mut TextBuffer, op: CaseOp) {
         let (start, end) = self.visual_char_range(buffer);
         let Some(start_off) = buffer.position_to_char_index(start) else { return };
         let Some(end_off) = buffer.position_to_char_index(end) else { return };
