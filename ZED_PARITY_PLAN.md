@@ -109,31 +109,37 @@ stronger than Zed's baseline today.
 
 ---
 
-## 2. Phase 1 — implemented in this change (no new dependencies)
+## 2. Phase 1 — implemented (landed on `arena/01a060ca-stack-ide`, CI green)
 
 1. **Vim mode** (`src/vim.rs`) — Normal/Insert/Visual/Visual-Line, counts,
-   motions (`h j k l w W b B e 0 ^ $ gg G f F t T %`), operators (`d c y > < gu
-   gU ~`), text objects (`iw aw i" a" i' a' ip ap`), `x X s S D C o O p P r J u
-   Ctrl+r`, visual ops, `/` search + `n/N`, `zz` scroll, ex line (`:w :q :wq :x
-   :q! :noh :sort`), mode indicator in the status bar, persisted
-   `editor.vim_mode` setting, command-palette toggle, policy-safe (default **off**).
-2. **Theme pack + theme selector** — One Dark & One Light (Zed defaults), Ayu
-   Dark/Mirage/Light, Gruvbox Dark/Light, Catppuccin Mocha/Latte + a
-   live-preview theme picker modal (Zed's Ctrl+K Ctrl+T) and palette commands.
-3. **File-type icons** (`src/file_icons.rs`) — painted brand-colored icons
-   (Rust gear, Python, JS/TS, JSON/TOML/YAML, MD, images, lockfile, git…) in the
-   project tree and editor tabs.
-4. **Auto save** — `off | after_delay | focus_change` with configurable delay;
-   wired through the existing save path so LSP `didSave` stays correct.
+   motions (`h j k l w W b B e 0 ^ $ gg G f F t T % { } n N ; ,`), operators
+   (`d c y > < gu gU` with motions and doubling), text objects (`iw aw i" a"
+   i' a' i( a( i{ a{ i[ a[`), `x X s S D C o O p P r J u Ctrl+r ~`, visual ops
+   (`d x y c p ~ u U > < o J`), `/` search with `n`/`N` (mirrored into the
+   search panel for highlighting), `:` ex line (`:w :q :q! :wq :x :noh`), block
+   cursor in normal/visual, bar cursor in insert, cmdline overlay, status-bar
+   mode badge, persisted `editor.vim_mode` (default **off**), Ctrl+Alt+V toggle.
+2. **Theme pack + theme selector** — One Dark & One Light (Zed's defaults), Ayu
+   Dark/Mirage/Light, Gruvbox Dark/Light, Catppuccin Mocha/Latte added to the
+   existing five; live-preview theme picker (Ctrl+Alt+T, also View menu and
+   palette) with type-to-filter, hover preview, Enter commit, Esc revert.
+3. **File-type icons** (`src/file_icons.rs`) — painted brand-colored monogram
+   badges for 27 file kinds in the project tree, editor tabs, and quick-open.
+4. **Auto save** — `off | after_delay | focus_change` with configurable delay,
+   routed through `write_buffer_to_disk` so LSP `didSave`/git stay correct.
 5. **Inline diagnostics** — severity-colored end-of-line messages (Zed-style),
-   toggle in settings.
+   `editor.inline_diagnostics` setting.
 6. **Assistant panel** (`src/assistant.rs`) — right-dock conversation UI with
-   active-file/selection context, background job execution, *Insert code block*
-   into the buffer, provider abstraction with a dependency-free **custom
-   command** provider (configurable template `{prompt} {file} {selection}
-   {language}`) so any local CLI model works.
-7. **CI** (`.github/workflows/ci.yml`) — fmt + clippy + check + full test suite
-   on every push, used to verify this work.
+   active-file/selection context chips, background worker, *Insert at cursor* /
+   *Copy* actions on fenced code blocks, dependency-free **custom command**
+   provider (`assistant.command` template with `{prompt} {file} {selection}
+   {language}`; prompt piped to stdin when `{prompt}` is absent), status dot,
+   Ctrl+Alt+A toggle, settings UI section.
+7. **CI** (`.github/workflows/ci.yml`) — check + full lib suite + integration
+   guards + clippy on every push; failure names surfaced as GitHub annotations.
+
+All of it verified by CI on GitHub Actions (compile + ~470 lib tests +
+integration guards passing).
 
 ## 3. Later phases (roadmap, each an independent slice)
 

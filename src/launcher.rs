@@ -561,7 +561,21 @@ fn launcher_row(
         ui.painter()
             .rect_filled(rect, 2.0, ui.visuals().widgets.hovered.weak_bg_fill);
     }
-    let primary_pos = egui::pos2(rect.left() + 8.0, rect.center().y);
+    // File-type icon for file rows (Zed quick-open look).
+    let mut text_left = rect.left() + 8.0;
+    if let RowAction::File(path) = &row.action {
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let icon_rect = egui::Rect::from_center_size(
+            egui::pos2(rect.left() + 17.0, rect.center().y),
+            egui::vec2(14.0, 14.0),
+        );
+        crate::file_icons::paint(ui.painter(), icon_rect, &name, palette.muted_text);
+        text_left = rect.left() + 30.0;
+    }
+    let primary_pos = egui::pos2(text_left, rect.center().y);
     ui.painter().text(
         primary_pos,
         egui::Align2::LEFT_CENTER,
