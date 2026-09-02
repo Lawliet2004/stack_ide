@@ -270,6 +270,7 @@ impl EditorPresentation {
             indent_guide_active_color: Color32::from_rgb(64, 64, 64),
             multi_cursor_modifier: MultiCursorModifier::Alt,
             vim_enabled: false,
+            inline_diagnostics: true,
         }
     }
 
@@ -413,7 +414,7 @@ pub enum DefinitionTrigger {
     CtrlClick,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorAction {
     GoToDefinition {
         position: CursorPosition,

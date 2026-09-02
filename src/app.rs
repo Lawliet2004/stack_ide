@@ -8328,7 +8328,7 @@ impl BlueIdeApp {
                                         crate::file_icons::paint(
                                             ui.painter(),
                                             icon_rect,
-                                            name,
+                                            &name,
                                             ui.visuals().weak_text_color(),
                                         );
 
