@@ -164,6 +164,16 @@ impl GoToLineState {
     }
 }
 
+// ─── Theme picker modal state (live preview, Zed-style) ───────────────────────
+
+#[derive(Debug, Default)]
+struct ThemePickerState {
+    pub open: bool,
+    pub query: String,
+    pub selected: usize,
+    pub request_focus: bool,
+}
+
 #[derive(Debug)]
 struct NewTabGroupState {
     pub open: bool,
@@ -1541,6 +1551,10 @@ pub struct BlueIdeApp {
     workspace_symbol: WorkspaceSymbolState,
     signature_help: SignatureHelpState,
     code_action: CodeActionState,
+    /// Live-preview theme picker modal (Zed-style Ctrl+Alt+T).
+    theme_picker: ThemePickerState,
+    /// AI assistant right-dock panel (conversation with pluggable provider).
+    pub assistant: crate::assistant::AssistantPanel,
     undo_history_panel_visible: bool,
     problems_panel: problems_panel::ProblemsPanel,
     hierarchy_panel: Option<HierarchyPanel>,
@@ -1828,6 +1842,8 @@ impl BlueIdeApp {
             workspace_symbol: WorkspaceSymbolState::default(),
             signature_help: SignatureHelpState::default(),
             code_action: CodeActionState::default(),
+            theme_picker: ThemePickerState::default(),
+            assistant: crate::assistant::AssistantPanel::default(),
             undo_history_panel_visible: false,
             problems_panel: problems_panel::ProblemsPanel::default(),
             hierarchy_panel: None,
@@ -2734,6 +2750,7 @@ impl BlueIdeApp {
             || self.new_tab_group_state.open
             || self.new_project.open
             || self.trust_prompt.open
+            || self.theme_picker.open
     }
 
     fn open_settings(&mut self) {
@@ -2888,6 +2905,35 @@ impl BlueIdeApp {
                             ui.add(egui::Slider::new(&mut draft.editor.tab_width, 1..=16));
                         });
                         ui.checkbox(&mut draft.editor.insert_spaces, "Insert spaces");
+                        ui.checkbox(&mut draft.editor.vim_mode, "Vim mode (modal editing)");
+                        ui.horizontal(|ui| {
+                            ui.label("Auto save:");
+                            let current = draft.editor.auto_save;
+                            egui::ComboBox::from_id_source("auto_save_mode")
+                                .selected_text(current.display_name())
+                                .show_ui(ui, |ui| {
+                                    for mode in crate::settings::AutoSaveMode::all() {
+                                        ui.selectable_value(
+                                            &mut draft.editor.auto_save,
+                                            *mode,
+                                            mode.display_name(),
+                                        );
+                                    }
+                                });
+                        });
+                        if draft.editor.auto_save == crate::settings::AutoSaveMode::AfterDelay {
+                            ui.horizontal(|ui| {
+                                ui.label("Delay:");
+                                ui.add(
+                                    egui::Slider::new(&mut draft.editor.auto_save_delay_ms, 100..=5000)
+                                        .suffix(" ms"),
+                                );
+                            });
+                        }
+                        ui.checkbox(
+                            &mut draft.editor.inline_diagnostics,
+                            "Show diagnostics inline at end of line",
+                        );
 
                         ui.add_space(12.0);
                         ui.heading("Panels");
@@ -4134,6 +4180,30 @@ impl BlueIdeApp {
                         }
                     }
                 }
+            }
+            EditorAction::VimEx(command) => match command {
+                crate::vim::ExCommand::Write => self.try_save_active(),
+                crate::vim::ExCommand::Quit => {
+                    if let Some(path) = self.active.clone() {
+                        self.request_close_file(&path);
+                    }
+                }
+                crate::vim::ExCommand::WriteQuit => {
+                    self.try_save_active();
+                    if let Some(path) = self.active.clone() {
+                        self.request_close_file(&path);
+                    }
+                }
+                crate::vim::ExCommand::NoHighlight => {
+                    self.search_state.visible = false;
+                    self.search_state.file_matches.clear();
+                    self.search_state.active_index = None;
+                }
+            },
+            EditorAction::VimSearch(pattern) => {
+                self.search_state.visible = true;
+                self.search_state.query.query = pattern;
+                self.search_state.recompile();
             }
         }
     }
@@ -5848,6 +5918,9 @@ impl BlueIdeApp {
         let mut workspace_symbol = false;
         let mut show_recent_files = false;
         let mut trigger_code_action = false;
+        let mut select_theme = false;
+        let mut toggle_vim = false;
+        let mut toggle_assistant = false;
         let mut zoom_in = false;
         let mut zoom_out = false;
         let mut zoom_reset = false;
@@ -5967,6 +6040,18 @@ impl BlueIdeApp {
             if input.consume_key(ctrl, Key::Period) {
                 trigger_code_action = true;
             }
+            // Ctrl+Alt+T — theme picker (Zed-style live preview)
+            if input.consume_key(ctrl_alt, Key::T) {
+                select_theme = true;
+            }
+            // Ctrl+Alt+V — toggle vim mode
+            if input.consume_key(ctrl_alt, Key::V) {
+                toggle_vim = true;
+            }
+            // Ctrl+Alt+A — toggle the AI assistant panel
+            if input.consume_key(ctrl_alt, Key::A) {
+                toggle_assistant = true;
+            }
         });
 
         if toggle_terminal {
@@ -6008,6 +6093,15 @@ impl BlueIdeApp {
         }
         if goto_line {
             self.execute_command(CommandId::GoToLine, context);
+        }
+        if select_theme {
+            self.execute_command(CommandId::SelectTheme, context);
+        }
+        if toggle_vim {
+            self.execute_command(CommandId::ToggleVimMode, context);
+        }
+        if toggle_assistant {
+            self.execute_command(CommandId::ToggleAssistant, context);
         }
         if workspace_symbol {
             self.execute_command(CommandId::GoToSymbol, context);
@@ -6248,6 +6342,29 @@ impl BlueIdeApp {
             .min_height(24.0)
             .show(context, |ui| {
                 ui.horizontal(|ui| {
+                    // Vim mode indicator (Zed shows the current mode leftmost).
+                    if self.settings.editor.vim_mode {
+                        let mode = self
+                            .active
+                            .as_ref()
+                            .and_then(|path| self.buffers.get(path))
+                            .map(|buffer| buffer.vim.mode)
+                            .unwrap_or(crate::vim::VimMode::Normal);
+                        let (label, color) = match mode {
+                            crate::vim::VimMode::Normal => ("NORMAL", palette.accent),
+                            crate::vim::VimMode::Insert => ("INSERT", palette.success),
+                            crate::vim::VimMode::Visual => ("VISUAL", palette.warning),
+                            crate::vim::VimMode::VisualLine => ("V-LINE", palette.warning),
+                            crate::vim::VimMode::Command => (":", palette.primary_text),
+                            crate::vim::VimMode::Search => ("/", palette.primary_text),
+                        };
+                        ui.label(
+                            RichText::new(label)
+                                .strong()
+                                .size(11.0)
+                                .color(color),
+                        );
+                    }
                     let path = self
                         .active
                         .as_ref()
@@ -8090,7 +8207,87 @@ impl BlueIdeApp {
         if show_tabs {
             self.show_tabs(context);
         }
+        // Assistant dock claims the outermost right edge before the editor
+        // (and its outline panel) are registered.
+        self.show_assistant_panel(context);
         self.show_editor(context)
+    }
+
+    /// Right-dock AI assistant conversation panel (Zed Assistant Panel style).
+    fn show_assistant_panel(&mut self, context: &egui::Context) {
+        if !self.assistant.open || self.zen.zen_mode {
+            return;
+        }
+        let palette = self.active_palette.semantic;
+        let mut event = None;
+        let panel_response = egui::SidePanel::right("assistant_panel")
+            .resizable(true)
+            .width_range(240.0..=640.0)
+            .default_width(self.assistant.width.max(300.0))
+            .frame(
+                egui::Frame::none()
+                    .fill(palette.panel_background)
+                    .inner_margin(egui::Margin::same(8.0)),
+            )
+            .show(context, |ui| {
+                let editor_context = self.assistant_editor_context();
+                event = self
+                    .assistant
+                    .show(ui, &palette, &self.settings.assistant.command, &editor_context);
+            });
+        let panel_width = panel_response.response.rect.width();
+        if panel_width > 0.0 {
+            self.assistant.width = panel_width;
+        }
+        match event {
+            Some(crate::assistant::AssistantEvent::InsertCode(code)) => {
+                let path = self.active.clone();
+                if let Some(path) = path {
+                    if let Some(buffer) = self.buffers.get_mut(&path) {
+                        let _ = buffer.insert_at_cursors(&code);
+                    }
+                }
+            }
+            Some(crate::assistant::AssistantEvent::Copy(text)) => {
+                context.output_mut(|output| output.copied_text = text);
+            }
+            None => {}
+        }
+    }
+
+    /// Snapshot of the active buffer for assistant context chips.
+    fn assistant_editor_context(&self) -> crate::assistant::EditorContext {
+        let Some(path) = self.active.clone() else {
+            return crate::assistant::EditorContext::default();
+        };
+        let Some(buffer) = self.buffers.get(&path) else {
+            return crate::assistant::EditorContext::default();
+        };
+        let selection = {
+            let (start, end) = buffer.primary_cursor().normalize();
+            if start == end {
+                None
+            } else if let (Some(start), Some(end)) = (
+                buffer.position_to_char_index(start),
+                buffer.position_to_char_index(end),
+            ) {
+                Some(buffer.text()[start..end].to_owned())
+            } else {
+                None
+            }
+        };
+        let language = crate::language::LanguageId::from_path(&path).display_label();
+        let file_text = if buffer.len_chars() <= 200_000 {
+            Some(buffer.text())
+        } else {
+            None
+        };
+        crate::assistant::EditorContext {
+            file_path: Some(path),
+            language: Some(language.to_owned()),
+            file_text,
+            selection,
+        }
     }
 
     fn compute_breadcrumb_segments(
@@ -9610,6 +9807,24 @@ impl BlueIdeApp {
                 Some("Ctrl+T"),
             ),
             CommandSpec::new(
+                CommandId::SelectTheme,
+                "Preferences",
+                "Select Theme…",
+                Some("Ctrl+Alt+T"),
+            ),
+            CommandSpec::new(
+                CommandId::ToggleVimMode,
+                "Editor",
+                "Toggle Vim Mode",
+                Some("Ctrl+Alt+V"),
+            ),
+            CommandSpec::new(
+                CommandId::ToggleAssistant,
+                "AI",
+                "Toggle Assistant Panel",
+                Some("Ctrl+Alt+A"),
+            ),
+            CommandSpec::new(
                 CommandId::NewTerminal,
                 "Run",
                 "New Terminal",
@@ -10143,6 +10358,32 @@ impl BlueIdeApp {
             }
             CommandId::OpenHistoryBrowser => {
                 self.term_history.open();
+            }
+            CommandId::SelectTheme => {
+                self.on_modal_opened();
+                self.theme_picker.open = true;
+                self.theme_picker.query.clear();
+                self.theme_picker.selected = 0;
+                self.theme_picker.request_focus = true;
+            }
+            CommandId::ToggleVimMode => {
+                self.settings.editor.vim_mode = !self.settings.editor.vim_mode;
+                let mut draft = self.settings.clone();
+                draft.editor.vim_mode = self.settings.editor.vim_mode;
+                if self.settings_store.save(&draft).is_ok() {
+                    self.settings = draft;
+                }
+                self.error_message = Some(format!(
+                    "Vim mode {}",
+                    if self.settings.editor.vim_mode {
+                        "enabled (Ctrl+Alt+V to disable)"
+                    } else {
+                        "disabled"
+                    }
+                ));
+            }
+            CommandId::ToggleAssistant => {
+                self.assistant.open = !self.assistant.open;
             }
             CommandId::SplitEditorRight => {
                 self.pane_actions.push(PaneAction::SplitH {

@@ -94,6 +94,12 @@ pub enum CommandId {
     EditEnvVars,
     /// Open the Command History browser.
     OpenHistoryBrowser,
+    /// Open the theme picker with live preview (Ctrl+Alt+T).
+    SelectTheme,
+    /// Toggle vim/modal editing for the active editor.
+    ToggleVimMode,
+    /// Toggle the AI assistant panel.
+    ToggleAssistant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

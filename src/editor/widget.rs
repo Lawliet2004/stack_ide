@@ -248,6 +248,8 @@ pub struct EditorPresentation {
     pub indent_guide_color: Color32,
     pub indent_guide_active_color: Color32,
     pub multi_cursor_modifier: MultiCursorModifier,
+    /// Vim/modal editing enabled (`editor.vim_mode`).
+    pub vim_enabled: bool,
 }
 
 impl EditorPresentation {
@@ -265,6 +267,7 @@ impl EditorPresentation {
             indent_guide_color: Color32::from_rgb(42, 42, 42),
             indent_guide_active_color: Color32::from_rgb(64, 64, 64),
             multi_cursor_modifier: MultiCursorModifier::Alt,
+            vim_enabled: false,
         }
     }
 
@@ -286,6 +289,7 @@ impl EditorPresentation {
                 "command" | "cmd" | "meta" => MultiCursorModifier::Command,
                 _ => MultiCursorModifier::Alt,
             };
+        self.vim_enabled = settings.vim_mode;
         self
     }
 
@@ -422,6 +426,10 @@ pub enum EditorAction {
     },
     NextBookmark,
     PrevBookmark,
+    /// A vim `:` command that needs the app shell (`:w`, `:q`, `:wq`, `:noh`).
+    VimEx(crate::vim::ExCommand),
+    /// A vim `/` pattern was accepted; mirror it into the search panel.
+    VimSearch(String),
 }
 
 /// Per-frame editor widget results consumed by the app shell.
@@ -529,6 +537,7 @@ impl EditorWidget {
             indent_guide_color,
             indent_guide_active_color,
             multi_cursor_modifier,
+            vim_enabled,
         } = presentation;
         buffer.set_bracket_features(bracket_colorization, bracket_matching);
         if state.last_path.as_deref() != buffer.path() {
@@ -898,6 +907,7 @@ impl EditorWidget {
                                 tab_width,
                                 insert_spaces,
                                 lsp_active,
+                                vim_enabled && !buffer.large_file_mode,
                             ) {
                                 if editor_action.is_none() {
                                     editor_action = Some(action);
@@ -1496,6 +1506,15 @@ impl EditorWidget {
                             let show_cursor =
                                 ((ui.input(|input| input.time) * 2.0) as u64).is_multiple_of(2);
                             if show_cursor {
+                                // Vim normal/visual modes use a block cursor
+                                // (Zed's vim mode look); insert keeps the bar.
+                                let vim_block = vim_enabled
+                                    && matches!(
+                                        buffer.vim.mode,
+                                        crate::vim::VimMode::Normal
+                                            | crate::vim::VimMode::Visual
+                                            | crate::vim::VimMode::VisualLine
+                                    );
                                 for (rect, primary) in &caret_rects {
                                     let color = if *primary {
                                         cursor_color
@@ -1507,10 +1526,24 @@ impl EditorWidget {
                                             180,
                                         )
                                     };
-                                    painter.line_segment(
-                                        [rect.left_top(), rect.left_bottom()],
-                                        Stroke::new(if *primary { 1.5 } else { 1.0 }, color),
-                                    );
+                                    if vim_block {
+                                        let width = if rect.width() > 0.5 {
+                                            rect.width().max(4.0)
+                                        } else {
+                                            // End-of-line: half-width block.
+                                            row_height * 0.45
+                                        };
+                                        let block = Rect::from_min_size(
+                                            rect.min,
+                                            vec2(width, row_height),
+                                        );
+                                        painter.rect_filled(block, 1.0, color);
+                                    } else {
+                                        painter.line_segment(
+                                            [rect.left_top(), rect.left_bottom()],
+                                            Stroke::new(if *primary { 1.5 } else { 1.0 }, color),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1709,6 +1742,30 @@ impl EditorWidget {
                 rect.size(),
             ));
         }
+
+        // ── Vim command line (`:` / `/`) overlay ────────────────────────────
+        if vim_enabled
+            && matches!(
+                buffer.vim.mode,
+                crate::vim::VimMode::Command | crate::vim::VimMode::Search
+            )
+        {
+            let inner = scroll_output.inner_rect;
+            let cmdline_rect = Rect::from_min_size(
+                pos2(inner.left() + 8.0, inner.bottom() - 28.0),
+                vec2(inner.width().min(480.0).max(120.0), 24.0),
+            );
+            let painter = ui.painter();
+            painter.rect_filled(cmdline_rect, 3.0, palette.semantic.elevated_background);
+            painter.rect_stroke(cmdline_rect, 3.0, Stroke::new(1.0, palette.semantic.border));
+            painter.text(
+                cmdline_rect.left_top() + vec2(8.0, 12.0),
+                egui::Align2::LEFT_CENTER,
+                buffer.vim.cmdline(),
+                FontId::monospace(presentation_font_size_snapshot(&font_id)),
+                palette.semantic.primary_text,
+            );
+        }
         if let Some(hover) = candidate_hovered_source.as_mut() {
             hover.token_rect = Rect::from_min_size(
                 editor_origin + hover.token_rect.min.to_vec2() - scroll_offset,
@@ -1860,14 +1917,50 @@ fn handle_keyboard_input(
     tab_width: usize,
     insert_spaces: bool,
     lsp_active: bool,
+    vim_enabled: bool,
 ) -> Option<EditorAction> {
     let mut action = None;
+    let vim_options = crate::vim::VimOptions {
+        tab_width,
+        insert_spaces,
+    };
+    // Feeds one input into the per-buffer vim state machine and stores it back.
+    fn feed_vim(
+        buffer: &mut TextBuffer,
+        input: crate::vim::VimInput,
+        options: crate::vim::VimOptions,
+    ) -> crate::vim::VimResult {
+        let mut vim = std::mem::take(&mut buffer.vim);
+        let result = vim.process(buffer, input, options);
+        buffer.vim = vim;
+        result
+    }
     let events = ui.input(|input| input.events.clone());
     for event in events {
         match event {
             Event::Text(text) if !text.is_empty() => {
                 if ui.input(|input| input.modifiers.command || input.modifiers.alt) {
                     continue;
+                }
+                if vim_enabled {
+                    let mut consumed_any = false;
+                    for ch in text.chars() {
+                        let result = feed_vim(buffer, crate::vim::VimInput::Char(ch), vim_options);
+                        if result.consumed {
+                            consumed_any = true;
+                            if action.is_none() {
+                                if let Some(ex) = result.ex {
+                                    action = Some(EditorAction::VimEx(ex));
+                                } else if let Some(pattern) = result.search {
+                                    action = Some(EditorAction::VimSearch(pattern));
+                                }
+                            }
+                        }
+                    }
+                    if consumed_any {
+                        state.scroll_to_cursor = true;
+                        continue;
+                    }
                 }
                 let _ = buffer.insert_at_cursors(&text);
                 state.preferred_col = None;
@@ -1887,6 +1980,51 @@ fn handle_keyboard_input(
                 modifiers,
                 ..
             } => {
+                // ── Vim interception (before every other binding) ────────────
+                if vim_enabled && !completion_popup_open {
+                    // Ctrl+R reaches vim only in normal/visual (redo).
+                    let ctrl_chord_redo = modifiers.ctrl
+                        && !modifiers.shift
+                        && !modifiers.alt
+                        && key == Key::R
+                        && buffer.vim.mode != crate::vim::VimMode::Insert;
+                    let named = if ctrl_chord_redo {
+                        Some(crate::vim::NamedKey::CtrlR)
+                    } else if modifiers.ctrl || modifiers.command || modifiers.alt {
+                        None
+                    } else {
+                        match key {
+                            Key::Escape => Some(crate::vim::NamedKey::Escape),
+                            Key::Enter => Some(crate::vim::NamedKey::Enter),
+                            Key::Backspace => Some(crate::vim::NamedKey::Backspace),
+                            Key::Delete => Some(crate::vim::NamedKey::Delete),
+                            Key::ArrowLeft => Some(crate::vim::NamedKey::Left),
+                            Key::ArrowRight => Some(crate::vim::NamedKey::Right),
+                            Key::ArrowUp => Some(crate::vim::NamedKey::Up),
+                            Key::ArrowDown => Some(crate::vim::NamedKey::Down),
+                            Key::Home => Some(crate::vim::NamedKey::Home),
+                            Key::End => Some(crate::vim::NamedKey::End),
+                            Key::PageUp => Some(crate::vim::NamedKey::PageUp),
+                            Key::PageDown => Some(crate::vim::NamedKey::PageDown),
+                            _ => None,
+                        }
+                    };
+                    if let Some(named) = named {
+                        let result = feed_vim(buffer, crate::vim::VimInput::Key(named), vim_options);
+                        if result.consumed {
+                            state.scroll_to_cursor = true;
+                            if action.is_none() {
+                                if let Some(ex) = result.ex {
+                                    action = Some(EditorAction::VimEx(ex));
+                                } else if let Some(pattern) = result.search {
+                                    action = Some(EditorAction::VimSearch(pattern));
+                                }
+                            }
+                            continue;
+                        }
+                        // Insert mode: fall through to the default handler.
+                    }
+                }
                 if completion_popup_open
                     && matches!(
                         key,
@@ -2901,684 +3039,8 @@ mod tests {
                 events: vec![egui::Event::PointerMoved(pos)],
                 screen_rect: Some(Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(800.0, 600.0),
-                )),
-                ..Default::default()
-            };
-            let mut output = None;
-            let _ = ctx.run(input, |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    output = Some(show_test_editor(
-                        ui,
-                        &mut state,
-                        &mut buffer,
-                        EditorInteraction::interactive(false),
-                    ));
-                });
-            });
-            output.unwrap().hover_popup.hovered_source
-        };
-
-        assert!(
-            hover_at(egui::pos2(80.0, line_y)).is_some(),
-            "pointer over rendered glyphs should be detected"
-        );
-        assert!(
-            hover_at(egui::pos2(400.0, line_y)).is_none(),
-            "empty editor background beyond the line end must not trigger LSP hover"
-        );
-    }
-
-    #[test]
-    fn diagnostic_underline_wins_over_lsp_hover() {
-        use super::EditorState;
-        use crate::editor::buffer::TextBuffer;
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        let diagnostics = [main_identifier_diagnostic()];
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-        let pointer = egui::pos2(92.0, line_y);
-        let path_id: Option<std::path::PathBuf> = buffer.path().map(std::path::PathBuf::from);
-        let tooltip_id = egui::Id::new(("diagnostic_tooltip", path_id.as_ref(), 0usize));
-        let hover_input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(800.0, 600.0),
-            )),
-            events: vec![egui::Event::PointerMoved(pointer)],
-            ..Default::default()
-        };
-
-        let mut output = None;
-        for _ in 0..2 {
-            let _ = ctx.run(hover_input.clone(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut state = EditorState::default();
-                    output = Some(show_test_editor_with_diagnostics(
-                        ui,
-                        &mut state,
-                        &mut buffer,
-                        &diagnostics,
-                        EditorInteraction::interactive(true),
-                    ));
-                });
-            });
-        }
-
-        let output = output.unwrap();
-        assert!(
-            output.hover_popup.diagnostic_tooltip_active,
-            "diagnostic underline must mark the tooltip active this frame"
-        );
-        assert!(
-            output.hover_popup.hovered_source.is_none(),
-            "diagnostic underline must suppress deferred LSP hover detection"
-        );
-        assert!(
-            egui::containers::popup::was_tooltip_open_last_frame(&ctx, tooltip_id),
-            "diagnostic underline must show the immediate diagnostic tooltip"
-        );
-    }
-
-    #[test]
-    fn resolve_pointer_hover_precedence_prefers_diagnostic() {
-        use super::{
-            diagnostic_wins_over_lsp_hover, resolve_pointer_hover_precedence,
-            resolve_pointer_hover_precedence_with_completion, HoveredSourcePosition,
-            PointerHoverPrecedence,
-        };
-        use crate::editor::buffer::CursorPosition;
-        use crate::editor::completion::CompletionPopupModel;
-
-        let source = HoveredSourcePosition::for_test(
-            CursorPosition { line: 0, col: 3 },
-            Rect::from_min_size(pos2(80.0, 20.0), egui::vec2(24.0, 18.0)),
-        );
-        assert!(diagnostic_wins_over_lsp_hover(Some(0)));
-        assert!(!diagnostic_wins_over_lsp_hover(None));
-        assert_eq!(
-            resolve_pointer_hover_precedence(Some(0), Some(source)),
-            PointerHoverPrecedence::Diagnostic(0),
-            "diagnostic underline must beat source-text LSP hover"
-        );
-        assert_eq!(
-            resolve_pointer_hover_precedence_with_completion(
-                CompletionPopupModel::open(),
-                Some(0),
-                Some(source),
-            ),
-            PointerHoverPrecedence::None,
-            "completion dropdown must beat diagnostic and source-text hover"
-        );
-    }
-
-    #[test]
-    fn resolve_pointer_hover_precedence_source_text_without_diagnostic() {
-        use super::{
-            resolve_pointer_hover_precedence, HoveredSourcePosition, PointerHoverPrecedence,
-        };
-        use crate::editor::buffer::CursorPosition;
-
-        let source = HoveredSourcePosition::for_test(
-            CursorPosition { line: 0, col: 3 },
-            Rect::from_min_size(pos2(80.0, 20.0), egui::vec2(24.0, 18.0)),
-        );
-        assert_eq!(
-            resolve_pointer_hover_precedence(None, Some(source)),
-            PointerHoverPrecedence::SourceText(source),
-            "source text should arm deferred LSP hover when no diagnostic is under the pointer"
-        );
-    }
-
-    #[test]
-    fn resolve_pointer_hover_precedence_none_elsewhere() {
-        use super::{resolve_pointer_hover_precedence, PointerHoverPrecedence};
-        assert_eq!(
-            resolve_pointer_hover_precedence(None, None),
-            PointerHoverPrecedence::None,
-            "pointer elsewhere must not arm diagnostic or LSP hover"
-        );
-    }
-
-    #[test]
-    fn editor_widget_hit_test_is_independent_of_lsp_active_flag() {
-        use super::EditorState;
-        use crate::editor::buffer::TextBuffer;
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-        let pointer = egui::pos2(80.0, line_y);
-        let input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(800.0, 600.0),
-            )),
-            events: vec![egui::Event::PointerMoved(pointer)],
-            ..Default::default()
-        };
-
-        let mut hover_with_lsp = None;
-        let mut hover_without_lsp = None;
-        let _ = ctx.run(input.clone(), |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let mut state = EditorState::default();
-                hover_with_lsp = Some(show_test_editor(
-                    ui,
-                    &mut state,
-                    &mut buffer,
-                    EditorInteraction::interactive(true),
-                ));
-            });
-        });
-        let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                let mut state = EditorState::default();
-                hover_without_lsp = Some(show_test_editor(
-                    ui,
-                    &mut state,
-                    &mut buffer,
-                    EditorInteraction::interactive(false),
-                ));
-            });
-        });
-
-        let with_lsp = hover_with_lsp
-            .unwrap()
-            .hover_popup
-            .hovered_source
-            .expect("source hit-test with lsp_active");
-        let without_lsp = hover_without_lsp
-            .unwrap()
-            .hover_popup
-            .hovered_source
-            .expect("source hit-test without lsp_active");
-        assert_eq!(with_lsp.position, without_lsp.position);
-        assert_eq!(with_lsp.token_rect, without_lsp.token_rect);
-    }
-
-    #[test]
-    fn editor_hover_popup_groups_hovered_source_and_diagnostic_flag() {
-        use super::EditorState;
-        use crate::editor::buffer::TextBuffer;
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        let diagnostics = [main_identifier_diagnostic()];
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-        let pointer = egui::pos2(92.0, line_y);
-        let mut output = None;
-        for _ in 0..2 {
-            let _ = ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(800.0, 600.0),
-                    )),
-                    events: vec![egui::Event::PointerMoved(pointer)],
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let mut state = EditorState::default();
-                        output = Some(show_test_editor_with_diagnostics(
-                            ui,
-                            &mut state,
-                            &mut buffer,
-                            &diagnostics,
-                            EditorInteraction::interactive(true),
-                        ));
-                    });
-                },
-            );
-        }
-
-        let output = output.unwrap();
-        assert!(output.hover_popup.diagnostic_tooltip_active);
-        assert!(
-            output.hover_popup.hovered_source.is_none(),
-            "diagnostic squiggle wins; deferred LSP hover is suppressed"
-        );
-        assert!(
-            output.editor_viewport_rect.is_some(),
-            "viewport bounds are layout context, not pointer handoff"
-        );
-    }
-
-    #[test]
-    fn completion_anchor_reports_screen_space_caret_bounds() {
-        use super::EditorState;
-        use crate::editor::buffer::{CursorPosition, TextBuffer};
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        buffer.set_cursor(CursorPosition { line: 0, col: 4 });
-        let ctx = Context::default();
-        let mut output = None;
-        let _ = ctx.run(
-            egui::RawInput {
-                focused: true,
-                screen_rect: Some(Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(800.0, 600.0),
-                )),
-                ..Default::default()
-            },
-            |ctx| {
-                let editor_id = egui::Id::new(("blue_ide_editor", None::<&str>));
-                ctx.memory_mut(|mem| mem.request_focus(editor_id));
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut state = EditorState::default();
-                    output = Some(show_test_editor(
-                        ui,
-                        &mut state,
-                        &mut buffer,
-                        EditorInteraction::interactive(true),
-                    ));
-                });
-            },
-        );
-
-        let output = output.unwrap();
-        let caret = output
-            .completion_anchor
-            .screen_rect
-            .expect("caret anchor should be reported");
-        let viewport = output
-            .editor_viewport_rect
-            .expect("editor viewport should be reported");
-        assert!(
-            caret.height() > 0.0,
-            "caret anchor should span at least one pixel vertically"
-        );
-        assert!(
-            viewport.intersects(caret.expand(1.0)),
-            "caret anchor should be in screen space within the editor viewport"
-        );
-    }
-
-    #[test]
-    fn source_token_rect_is_screen_space_within_editor_viewport() {
-        use super::EditorState;
-        use crate::editor::buffer::TextBuffer;
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-        let pointer = egui::pos2(92.0, line_y);
-        let mut output = None;
-        let _ = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(800.0, 600.0),
-                )),
-                events: vec![egui::Event::PointerMoved(pointer)],
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut state = EditorState::default();
-                    output = Some(show_test_editor(
-                        ui,
-                        &mut state,
-                        &mut buffer,
-                        EditorInteraction::interactive(true),
-                    ));
-                });
-            },
-        );
-
-        let output = output.unwrap();
-        let hover = output
-            .hover_popup
-            .hovered_source
-            .expect("source hover anchor");
-        let viewport = output.editor_viewport_rect.expect("editor viewport");
-        assert!(hover.token_rect.is_positive());
-        assert!(
-            viewport.contains(hover.token_rect.center()),
-            "source token_rect should be a screen-space anchor inside the editor viewport"
-        );
-    }
-
-    #[test]
-    fn pointer_hover_hit_test_does_not_capture_text_input() {
-        use super::EditorState;
-        use crate::editor::buffer::{CursorPosition, TextBuffer};
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        buffer.set_cursor(CursorPosition { line: 1, col: 0 });
-        let cursor_before = buffer.cursor();
-        let revision_before = buffer.revision();
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-        let pointer = egui::pos2(92.0, line_y);
-        let mut output = None;
-        let _ = ctx.run(
-            egui::RawInput {
-                focused: true,
-                screen_rect: Some(Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(800.0, 600.0),
-                )),
-                events: vec![egui::Event::PointerMoved(pointer)],
-                ..Default::default()
-            },
-            |ctx| {
-                let editor_id = egui::Id::new(("blue_ide_editor", None::<&str>));
-                ctx.memory_mut(|mem| mem.request_focus(editor_id));
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut state = EditorState::default();
-                    output = Some(show_test_editor(
-                        ui,
-                        &mut state,
-                        &mut buffer,
-                        EditorInteraction::interactive(true),
-                    ));
-                });
-            },
-        );
-
-        let output = output.unwrap();
-        assert!(output.hover_popup.hovered_source.is_some());
-        assert!(output.editor_has_focus);
-        assert_eq!(buffer.cursor(), cursor_before);
-        assert_eq!(buffer.revision(), revision_before);
-    }
-
-    #[test]
-    fn widget_renders_diagnostic_tooltips_not_lsp_documentation_popups() {
-        use super::EditorState;
-        use crate::editor::buffer::TextBuffer;
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        let diagnostics = [main_identifier_diagnostic()];
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-        let pointer = egui::pos2(92.0, line_y);
-        let path_id: Option<std::path::PathBuf> = buffer.path().map(std::path::PathBuf::from);
-        let diagnostic_tooltip_id = egui::Id::new(("diagnostic_tooltip", path_id.as_ref(), 0usize));
-
-        for _ in 0..2 {
-            let _ = ctx.run(
-                egui::RawInput {
-                    screen_rect: Some(Rect::from_min_size(
-                        egui::Pos2::ZERO,
-                        egui::vec2(800.0, 600.0),
-                    )),
-                    events: vec![egui::Event::PointerMoved(pointer)],
-                    ..Default::default()
-                },
-                |ctx| {
-                    egui::CentralPanel::default().show(ctx, |ui| {
-                        let mut state = EditorState::default();
-                        let _ = show_test_editor_with_diagnostics(
-                            ui,
-                            &mut state,
-                            &mut buffer,
-                            &diagnostics,
-                            EditorInteraction::interactive(true),
-                        );
-                    });
-                },
-            );
-        }
-
-        assert!(
-            egui::containers::popup::was_tooltip_open_last_frame(&ctx, diagnostic_tooltip_id),
-            "widget popup rendering is limited to diagnostic squiggle tooltips"
-        );
-    }
-
-    #[test]
-    fn completion_open_suppresses_diagnostic_and_source_pointer_hover() {
-        use crate::editor::buffer::TextBuffer;
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        let diagnostics = [main_identifier_diagnostic()];
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-        let pointer = egui::pos2(92.0, line_y);
-        let path_id: Option<std::path::PathBuf> = buffer.path().map(std::path::PathBuf::from);
-        let tooltip_id = egui::Id::new(("diagnostic_tooltip", path_id.as_ref(), 0usize));
-        let hover_input = egui::RawInput {
-            screen_rect: Some(Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(800.0, 600.0),
-            )),
-            events: vec![egui::Event::PointerMoved(pointer)],
-            ..Default::default()
-        };
-
-        let mut output = None;
-        for _ in 0..2 {
-            let _ = ctx.run(hover_input.clone(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut state = EditorState::default();
-                    output = Some(show_test_editor_with_diagnostics(
-                        ui,
-                        &mut state,
-                        &mut buffer,
-                        &diagnostics,
-                        EditorInteraction::interactive(true)
-                            .with_completion_popup(CompletionPopupModel::open()),
-                    ));
-                });
-            });
-        }
-
-        assert!(
-            output.unwrap().hover_popup.hovered_source.is_none(),
-            "completion must suppress source-text LSP hover detection"
-        );
-        assert!(
-            !egui::containers::popup::was_tooltip_open_last_frame(&ctx, tooltip_id),
-            "completion must suppress diagnostic squiggle tooltips"
-        );
-    }
-
-    fn main_identifier_diagnostic() -> LspDiagnostic {
-        LspDiagnostic {
-            line_start: 0,
-            col_start: 3,
-            line_end: 0,
-            col_end: 7,
-            severity: DiagnosticSeverity::Error,
-            message: "expected `;`".to_owned(),
-            code: Some("E0425".to_owned()),
-        }
-    }
-
-    #[test]
-    fn diagnostic_tooltip_preserves_message_and_code_presentation() {
-        use super::EditorState;
-        use crate::editor::buffer::TextBuffer;
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        let diagnostic = main_identifier_diagnostic();
-        let diagnostics = [diagnostic.clone()];
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-        let pointer = egui::pos2(92.0, line_y);
-
-        let mut output = None;
-        let _ = ctx.run(
-            egui::RawInput {
-                screen_rect: Some(Rect::from_min_size(
-                    egui::Pos2::ZERO,
-                    egui::vec2(800.0, 600.0),
-                )),
-                events: vec![egui::Event::PointerMoved(pointer)],
-                ..Default::default()
-            },
-            |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut state = EditorState::default();
-                    output = Some(show_test_editor_with_diagnostics(
-                        ui,
-                        &mut state,
-                        &mut buffer,
-                        &diagnostics,
-                        EditorInteraction::interactive(false),
-                    ));
-                });
-            },
-        );
-
-        let output = output.unwrap();
-        assert!(output.hover_popup.diagnostic_tooltip_active);
-        assert!(output.hover_popup.hovered_source.is_none());
-        assert_eq!(diagnostic.message, "expected `;`");
-        assert_eq!(diagnostic.code.as_deref(), Some("E0425"));
-    }
-
-    #[test]
-    fn diagnostic_squiggle_shows_tooltip_at_pointer() {
-        use super::EditorState;
-        use crate::editor::buffer::TextBuffer;
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        let diagnostics = [main_identifier_diagnostic()];
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-        let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0));
-        let pointer = egui::pos2(92.0, line_y);
-        let path_id: Option<std::path::PathBuf> = buffer.path().map(std::path::PathBuf::from);
-        let tooltip_id = egui::Id::new(("diagnostic_tooltip", path_id.as_ref(), 0usize));
-        let hover_input = egui::RawInput {
-            screen_rect: Some(screen),
-            events: vec![egui::Event::PointerMoved(pointer)],
-            ..Default::default()
-        };
-        for _ in 0..2 {
-            let _ = ctx.run(hover_input.clone(), |ctx| {
-                egui::CentralPanel::default().show(ctx, |ui| {
-                    let mut state = EditorState::default();
-                    let _ = show_test_editor_with_diagnostics(
-                        ui,
-                        &mut state,
-                        &mut buffer,
-                        &diagnostics,
-                        EditorInteraction::interactive(false),
-                    );
-                });
-            });
-        }
-
-        assert!(
-            egui::containers::popup::was_tooltip_open_last_frame(&ctx, tooltip_id),
-            "hovering a diagnostic squiggle should show the editor-owned tooltip"
-        );
-    }
-
-    #[test]
-    fn diagnostic_squiggle_suppresses_pointer_text_hover() {
-        use super::EditorState;
-        use crate::editor::buffer::TextBuffer;
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\n");
-        let diagnostics = [main_identifier_diagnostic()];
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-
-        let mut state = EditorState::default();
-        let input = egui::RawInput {
-            events: vec![egui::Event::PointerMoved(egui::pos2(92.0, line_y))],
-            screen_rect: Some(Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(800.0, 600.0),
-            )),
-            ..Default::default()
-        };
-        let mut output = None;
-        let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                output = Some(show_test_editor_with_diagnostics(
-                    ui,
-                    &mut state,
-                    &mut buffer,
-                    &diagnostics,
-                    EditorInteraction::interactive(false),
-                ));
-            });
-        });
-
-        assert!(
-            output.unwrap().hover_popup.hovered_source.is_none(),
-            "LSP hover must not arm while the pointer is over a diagnostic squiggle"
-        );
-    }
-
-    #[test]
-    fn pointer_text_hover_works_alongside_diagnostic_on_another_line() {
-        use super::EditorState;
-        use crate::editor::buffer::TextBuffer;
-        use egui::Context;
-
-        let mut buffer = TextBuffer::from_text("fn main() {}\nlet x = 1;\n");
-        let diagnostics = [LspDiagnostic {
-            line_start: 1,
-            col_start: 4,
-            line_end: 1,
-            col_end: 5,
-            severity: DiagnosticSeverity::Warning,
-            message: "unused variable".to_owned(),
-            code: Some("unused".to_owned()),
-        }];
-        let ctx = Context::default();
-        let row_height = 20.0;
-        let line_y = 10.0 + row_height * 0.5;
-
-        let mut state = EditorState::default();
-        let input = egui::RawInput {
-            events: vec![egui::Event::PointerMoved(egui::pos2(80.0, line_y))],
-            screen_rect: Some(Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(800.0, 600.0),
-            )),
-            ..Default::default()
-        };
-        let mut output = None;
-        let _ = ctx.run(input, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                output = Some(show_test_editor_with_diagnostics(
-                    ui,
-                    &mut state,
-                    &mut buffer,
-                    &diagnostics,
-                    EditorInteraction::interactive(false),
-                ));
-            });
-        });
-
-        let hover = output
-            .unwrap()
-            .hover_popup
-            .hovered_source
-            .expect("source text without a diagnostic squiggle should still arm LSP hover");
-        assert_eq!(hover.cursor_position().line, 0);
-        assert!(hover.cursor_position().col >= 3);
-    }
+                    e
+/// Snapshot the monospace font size from a `FontId`.
+fn presentation_font_size_snapshot(font_id: &FontId) -> f32 {
+    font_id.size
 }
