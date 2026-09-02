@@ -253,13 +253,13 @@ impl BlueIdeApp {
             .as_ref()
             .and_then(|path| path.file_name())
             .map(|name| name.to_string_lossy().to_string())
-            .unwrap_or_else(|| "Blue IDE".to_string());
+            .unwrap_or_else(|| "No Project".to_string());
 
         egui::TopBottomPanel::top("menu_bar")
             .exact_height(TITLE_BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
-                    .fill(palette.panel_background)
+                    .fill(palette.ui_background)
                     .inner_margin(egui::Margin::same(0.0)),
             )
             .show(context, |ui| {
@@ -284,29 +284,66 @@ impl BlueIdeApp {
                     context.send_viewport_cmd(ViewportCommand::StartDrag);
                 }
 
-                // ── Left cluster: app mark, workspace name, menus ──
-                let mut left_ui =
-                    ui.child_ui(full_rect, egui::Layout::left_to_right(egui::Align::Center));
-                left_ui.add_space(8.0);
-                Self::paint_app_logo(&mut left_ui, palette);
-                left_ui.add_space(8.0);
+                // ── Center: Zed-style project switcher pill ──
+                if !self.has_modal() {
+                    let branch = self
+                        .git
+                        .as_ref()
+                        .map(|git| git.branch.clone())
+                        .unwrap_or_default();
+                    let pill_rect = egui::Rect::from_center_size(
+                        egui::pos2(full_rect.center().x, full_rect.center().y),
+                        egui::vec2(224.0, 24.0),
+                    );
+                    if Self::project_switcher(ui, pill_rect, palette, &workspace_name, &branch) {
+                        command = Some(CommandId::QuickOpen);
+                    }
+                }
 
-                left_ui.add_enabled_ui(!self.has_modal(), |ui| {
-                    ui.spacing_mut().button_padding = egui::vec2(5.0, 1.0);
-                    ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
-                    ui.spacing_mut().item_spacing.x = 2.0;
+                // ── Right cluster: overflow menu (full IDE menus) + window controls ──
+                let mut right_ui =
+                    ui.child_ui(full_rect, egui::Layout::right_to_left(egui::Align::Center));
 
-                    // Flat menu labels: no box behind the items at rest. A subtle
-                    // background only appears on hover / when the menu is open.
-                    let widgets = &mut ui.visuals_mut().widgets;
-                    widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-                    widgets.inactive.bg_fill = Color32::TRANSPARENT;
-                    widgets.inactive.bg_stroke = egui::Stroke::NONE;
-                    widgets.active.bg_stroke = egui::Stroke::NONE;
-                    widgets.hovered.bg_stroke = egui::Stroke::NONE;
-                    widgets.open.bg_stroke = egui::Stroke::NONE;
+                if Self::paint_window_control(
+                    &mut right_ui,
+                    WindowControl::Close,
+                    palette.primary_text,
+                ) {
+                    context.send_viewport_cmd(ViewportCommand::Close);
+                }
+                if Self::paint_window_control(
+                    &mut right_ui,
+                    WindowControl::Maximize { maximized },
+                    palette.primary_text,
+                ) {
+                    context.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                }
+                if Self::paint_window_control(
+                    &mut right_ui,
+                    WindowControl::Minimize,
+                    palette.primary_text,
+                ) {
+                    context.send_viewport_cmd(ViewportCommand::Minimized(true));
+                }
 
-                    ui.menu_button(TOP_MENU_LABELS[0], |ui| {
+                right_ui.add_space(4.0);
+                right_ui.add_enabled_ui(!self.has_modal(), |ui| {
+                    ui.menu_button(RichText::new("⋯").size(16.0), |ui| {
+                        ui.spacing_mut().button_padding = egui::vec2(5.0, 1.0);
+                        ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
+                        ui.spacing_mut().item_spacing.x = 2.0;
+
+                        // Flat menu items: no box behind the items at rest. A subtle
+                        // background only appears on hover / when a submenu is open.
+                        let widgets = &mut ui.visuals_mut().widgets;
+                        widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+                        widgets.inactive.bg_fill = Color32::TRANSPARENT;
+                        widgets.inactive.bg_stroke = egui::Stroke::NONE;
+                        widgets.active.bg_stroke = egui::Stroke::NONE;
+                        widgets.hovered.bg_stroke = egui::Stroke::NONE;
+                        widgets.open.bg_stroke = egui::Stroke::NONE;
+
+                        ui.menu_button(TOP_MENU_LABELS[0], |ui| {
                         if ui.button("Quick Open...     Ctrl+P").clicked() {
                             command = Some(CommandId::QuickOpen);
                             ui.close_menu();
@@ -631,353 +668,84 @@ impl BlueIdeApp {
                             }
                         }
                     });
+                    });
                 });
 
-                // Editor navigation arrows (back / forward), mirroring VS Code.
-                if !self.has_modal() {
-                    left_ui.add_space(6.0);
-                    if Self::paint_nav_arrow(&mut left_ui, false, palette) {
-                        command = Some(CommandId::PreviousTab);
-                    }
-                    if Self::paint_nav_arrow(&mut left_ui, true, palette) {
-                        command = Some(CommandId::NextTab);
-                    }
-                }
-
-                // ── Right cluster: action icons + window controls ──
-                let mut right_ui =
-                    ui.child_ui(full_rect, egui::Layout::right_to_left(egui::Align::Center));
-
-                if Self::paint_window_control(
-                    &mut right_ui,
-                    WindowControl::Close,
-                    palette.primary_text,
-                ) {
-                    context.send_viewport_cmd(ViewportCommand::Close);
-                }
-                if Self::paint_window_control(
-                    &mut right_ui,
-                    WindowControl::Maximize { maximized },
-                    palette.primary_text,
-                ) {
-                    context.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
-                }
-                if Self::paint_window_control(
-                    &mut right_ui,
-                    WindowControl::Minimize,
-                    palette.primary_text,
-                ) {
-                    context.send_viewport_cmd(ViewportCommand::Minimized(true));
-                }
-
-                if !self.has_modal() {
-                    right_ui.add_space(6.0);
-                    if Self::paint_profile_badge(&mut right_ui, palette) {
-                        // Reserved for future account actions.
-                    }
-                    if Self::paint_toolbar_icon(&mut right_ui, ToolbarIcon::Settings, palette) {
-                        command = Some(CommandId::OpenSettings);
-                    }
-                    if Self::paint_toolbar_icon(&mut right_ui, ToolbarIcon::Notifications, palette)
-                    {
-                        command = Some(CommandId::ToggleProblems);
-                    }
-                    if Self::paint_toolbar_icon(&mut right_ui, ToolbarIcon::SourceControl, palette)
-                    {
-                        command = Some(CommandId::ToggleGitPanel);
-                    }
-                }
-
-                // ── Center: command/search bar (VS Code "command center") ──
-                let left_edge = left_ui.min_rect().right() + 16.0;
-                let right_edge = right_ui.min_rect().left() - 16.0;
-                if !self.has_modal() && right_edge - left_edge > 200.0 {
-                    let bar_w = (right_edge - left_edge).clamp(200.0, 360.0);
-                    let bar_rect = egui::Rect::from_center_size(
-                        egui::pos2((left_edge + right_edge) * 0.5, full_rect.center().y),
-                        egui::vec2(bar_w, 24.0),
-                    );
-                    if Self::command_center_bar(ui, bar_rect, palette, &workspace_name) {
-                        command = Some(CommandId::QuickOpen);
-                    }
-                    crate::keyboard_nav::draw_focus_outline(ui, egui::Id::new("command_center_search"), bar_rect);
-                }
                 crate::keyboard_nav::draw_focus_outline(ui, egui::Id::new("menu_bar"), full_rect);
             });
 
         command
     }
 
-    /// The user's initial for the profile badge (falls back to `U`).
-    fn profile_initial() -> char {
-        std::env::var("USERNAME")
-            .ok()
-            .and_then(|name| name.trim().chars().next())
-            .map(|ch| ch.to_ascii_uppercase())
-            .unwrap_or('U')
-    }
-
-    /// The small app mark shown at the far left of the title bar: a rounded
-    /// accent square stamped with a white `<>` glyph.
-    fn paint_app_logo(ui: &mut egui::Ui, palette: crate::theme::SemanticPalette) {
-        let (rect, _) =
-            ui.allocate_exact_size(egui::vec2(20.0, TITLE_BAR_HEIGHT), egui::Sense::hover());
-        let sq = egui::Rect::from_center_size(rect.center(), egui::vec2(15.0, 15.0));
-        ui.painter()
-            .rect_filled(sq, egui::Rounding::same(3.5), palette.accent);
-        let c = sq.center();
-        let stroke = egui::Stroke::new(1.4, Color32::WHITE);
-        // "<"
-        ui.painter().line_segment(
-            [egui::pos2(c.x - 1.5, c.y - 3.0), egui::pos2(c.x - 4.0, c.y)],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [egui::pos2(c.x - 4.0, c.y), egui::pos2(c.x - 1.5, c.y + 3.0)],
-            stroke,
-        );
-        // ">"
-        ui.painter().line_segment(
-            [egui::pos2(c.x + 1.5, c.y - 3.0), egui::pos2(c.x + 4.0, c.y)],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [egui::pos2(c.x + 4.0, c.y), egui::pos2(c.x + 1.5, c.y + 3.0)],
-            stroke,
-        );
-    }
-
-    /// A muted back/forward navigation arrow. `forward` flips the direction.
-    /// Returns `true` when clicked.
-    fn paint_nav_arrow(
-        ui: &mut egui::Ui,
-        forward: bool,
-        palette: crate::theme::SemanticPalette,
-    ) -> bool {
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(26.0, TITLE_BAR_HEIGHT), egui::Sense::click());
-        if response.hovered() {
-            ui.painter().rect_filled(
-                rect.shrink2(egui::vec2(2.0, 6.0)),
-                5.0,
-                Color32::from_white_alpha(20),
-            );
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        let c = rect.center();
-        let color = if response.hovered() {
-            palette.primary_text
-        } else {
-            palette.muted_text
-        };
-        let stroke = egui::Stroke::new(1.4, color);
-        let half = 4.5;
-        let (tip, tail, head_dx) = if forward {
-            (
-                egui::pos2(c.x + half, c.y),
-                egui::pos2(c.x - half, c.y),
-                -3.6,
-            )
-        } else {
-            (
-                egui::pos2(c.x - half, c.y),
-                egui::pos2(c.x + half, c.y),
-                3.6,
-            )
-        };
-        ui.painter().line_segment([tail, tip], stroke);
-        ui.painter()
-            .line_segment([tip, egui::pos2(tip.x + head_dx, c.y - 3.4)], stroke);
-        ui.painter()
-            .line_segment([tip, egui::pos2(tip.x + head_dx, c.y + 3.4)], stroke);
-
-        let tip_text = if forward { "Forward (Next Tab)" } else { "Back (Previous Tab)" };
-        response.on_hover_text(tip_text).clicked()
-    }
-
-    /// A small monochrome action icon (source control, notifications, settings).
-    /// Returns `true` when clicked.
-    fn paint_toolbar_icon(
-        ui: &mut egui::Ui,
-        icon: ToolbarIcon,
-        palette: crate::theme::SemanticPalette,
-    ) -> bool {
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(34.0, TITLE_BAR_HEIGHT), egui::Sense::click());
-        if response.hovered() {
-            ui.painter().rect_filled(
-                rect.shrink2(egui::vec2(3.0, 6.0)),
-                5.0,
-                Color32::from_white_alpha(20),
-            );
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        let _icon_id = ui.id().with("toolbar_icon").with(format!("{icon:?}"));
-        {
-            let painter = ui.painter();
-            let color = palette.muted_text;
-            let stroke = egui::Stroke::new(1.3, color);
-            let c = rect.center();
-            match icon {
-                ToolbarIcon::SourceControl => {
-                    let lx = c.x - 4.0;
-                    let top = egui::pos2(lx, c.y - 6.0);
-                    let bot = egui::pos2(lx, c.y + 6.0);
-                    let branch = egui::pos2(c.x + 5.0, c.y - 6.0);
-                    painter.line_segment([top, bot], stroke);
-                    painter.circle_stroke(top, 2.0, stroke);
-                    painter.circle_stroke(bot, 2.0, stroke);
-                    painter.circle_stroke(branch, 2.0, stroke);
-                    painter.line_segment(
-                        [
-                            egui::pos2(branch.x, branch.y + 2.0),
-                            egui::pos2(branch.x, c.y),
-                        ],
-                        stroke,
-                    );
-                    painter.line_segment(
-                        [egui::pos2(branch.x, c.y), egui::pos2(lx + 2.0, c.y)],
-                        stroke,
-                    );
-                }
-                ToolbarIcon::Notifications => {
-                    let w = 4.5;
-                    let pts = [
-                        egui::pos2(c.x - w, c.y + 2.5),
-                        egui::pos2(c.x - w + 0.8, c.y - 1.0),
-                        egui::pos2(c.x, c.y - 4.5),
-                        egui::pos2(c.x + w - 0.8, c.y - 1.0),
-                        egui::pos2(c.x + w, c.y + 2.5),
-                    ];
-                    for pair in pts.windows(2) {
-                        painter.line_segment([pair[0], pair[1]], stroke);
-                    }
-                    painter.line_segment(
-                        [
-                            egui::pos2(c.x - w - 1.0, c.y + 2.5),
-                            egui::pos2(c.x + w + 1.0, c.y + 2.5),
-                        ],
-                        stroke,
-                    );
-                    painter.circle_filled(egui::pos2(c.x, c.y + 4.8), 1.2, color);
-                }
-                ToolbarIcon::Settings => {
-                    painter.circle_stroke(c, 4.0, stroke);
-                    painter.circle_filled(c, 1.4, color);
-                    for i in 0..8 {
-                        let a = std::f32::consts::TAU * (i as f32) / 8.0;
-                        let (sin, cos) = a.sin_cos();
-                        painter.line_segment(
-                            [
-                                egui::pos2(c.x + cos * 4.6, c.y + sin * 4.6),
-                                egui::pos2(c.x + cos * 6.4, c.y + sin * 6.4),
-                            ],
-                            egui::Stroke::new(1.1, color),
-                        );
-                    }
-                }
-            }
-        }
-        let tip = match icon {
-            ToolbarIcon::SourceControl => "Source Control",
-            ToolbarIcon::Notifications => "Notifications",
-            ToolbarIcon::Settings => "Settings",
-        };
-        let a11y_label = match icon {
-            ToolbarIcon::SourceControl => "Open Source Control panel",
-            ToolbarIcon::Notifications => "Toggle notifications panel",
-            ToolbarIcon::Settings => "Open settings panel",
-        };
-        let response = crate::screen_reader::label_element(ui, response, tip, a11y_label);
-        response.clicked()
-    }
-
-    /// A circular profile badge showing the user's initial. Returns `true` when clicked.
-    fn paint_profile_badge(ui: &mut egui::Ui, palette: crate::theme::SemanticPalette) -> bool {
-        let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(34.0, TITLE_BAR_HEIGHT), egui::Sense::click());
-        if response.hovered() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        }
-        let c = rect.center();
-        let painter = ui.painter();
-        painter.circle_filled(c, 9.0, palette.accent);
-        painter.text(
-            c,
-            egui::Align2::CENTER_CENTER,
-            Self::profile_initial().to_string(),
-            egui::FontId::proportional(11.5),
-            Color32::WHITE,
-        );
-        response.on_hover_text("Accounts").clicked()
-    }
-
-    /// The centered "command center" search bar. Returns `true` when clicked.
-    /// The centered "command center": a rounded, clickable pill showing a
-    /// search glyph and the current workspace name. Clicking (or activating it
-    /// while keyboard-focused) opens Quick Open. Returns `true` when activated.
-    fn command_center_bar(
+    /// Zed-style centered project switcher: a rounded pill showing the active
+    /// workspace and current git branch with a trailing chevron. Returns `true`
+    /// when clicked (or activated via Enter while keyboard-focused).
+    fn project_switcher(
         ui: &mut egui::Ui,
         rect: egui::Rect,
         palette: crate::theme::SemanticPalette,
-        label: &str,
+        workspace: &str,
+        branch: &str,
     ) -> bool {
-        let id = egui::Id::new("command_center_search");
+        let id = egui::Id::new("project_switcher");
         let response = ui.interact(rect, id, egui::Sense::click());
         if response.hovered() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let focused = response.has_focus();
-        let stroke_color = if focused || response.hovered() {
-            palette.accent
-        } else {
-            palette.border
-        };
-
-        let font = egui::FontId::proportional(12.0);
-        let text_w = ui.fonts(|f| {
-            f.layout_no_wrap(label.to_owned(), font.clone(), palette.muted_text)
-                .size()
-                .x
-        });
 
         let painter = ui.painter();
+        let bg = if response.hovered() {
+            palette.panel_background
+        } else {
+            palette.panel_background
+        };
         painter.rect(
             rect,
             egui::Rounding::same(6.0),
-            palette.ui_background,
-            egui::Stroke::new(1.0, stroke_color),
+            bg,
+            egui::Stroke::new(1.0, palette.border),
         );
 
-        // Center a [magnifier | label] group horizontally inside the pill.
-        let icon_w = 11.0;
-        let gap = 7.0;
-        let group_w = icon_w + gap + text_w;
-        let start_x = (rect.center().x - group_w * 0.5).max(rect.left() + 10.0);
-        let cy = rect.center().y;
+        let font = egui::FontId::proportional(12.0);
+        let label = if branch.is_empty() {
+            workspace.to_owned()
+        } else {
+            format!("{workspace}  ⎇ {branch}")
+        };
+        let chevron = "▾";
+        let text_w = ui.fonts(|f| {
+            f.layout_no_wrap(label.clone(), font.clone(), palette.primary_text)
+                .size()
+                .x
+        });
+        let chevron_w = ui.fonts(|f| {
+            f.layout_no_wrap(chevron.to_owned(), font.clone(), palette.muted_text)
+                .size()
+                .x
+        });
+        let gap = 6.0;
+        let total_w = text_w + gap + chevron_w;
+        let start_x = (rect.center().x - total_w * 0.5).max(rect.left() + 8.0);
 
-        let glyph_stroke = egui::Stroke::new(1.3, palette.muted_text);
-        let mc = egui::pos2(start_x + 4.0, cy - 1.0);
-        let r = 3.2;
-        painter.circle_stroke(mc, r, glyph_stroke);
-        painter.line_segment(
-            [
-                egui::pos2(mc.x + r * 0.75, mc.y + r * 0.75),
-                egui::pos2(mc.x + r * 0.75 + 2.4, mc.y + r * 0.75 + 2.4),
-            ],
-            glyph_stroke,
-        );
         painter.text(
-            egui::pos2(start_x + icon_w + gap, cy),
+            egui::pos2(start_x, rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
             font,
+            palette.primary_text,
+        );
+        painter.text(
+            egui::pos2(start_x + text_w + gap, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            chevron,
+            egui::FontId::proportional(10.0),
             palette.muted_text,
         );
 
         let activated_by_key = focused && ui.input(|i| i.key_pressed(egui::Key::Enter));
         response
-            .on_hover_text("Search files, commands, and tests (Ctrl+P)")
+            .on_hover_text("Switch project (Ctrl+P)")
             .clicked()
             || activated_by_key
     }
@@ -1624,14 +1392,6 @@ impl WindowControl {
             Self::Close => "Close window",
         }
     }
-}
-
-/// Action icons shown on the right of the title bar (VS Code style).
-#[derive(Debug, Clone, Copy)]
-enum ToolbarIcon {
-    SourceControl,
-    Notifications,
-    Settings,
 }
 
 impl BlueIdeApp {
