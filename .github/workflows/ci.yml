@@ -62,7 +62,7 @@ jobs:
               [ -f "$log" ] || continue
               echo "=== ${log} ==="
               sed 's/\x1b\[[0-9;]*m//g' "$log" |
-                grep -E "panicked at|^---- |assertion|left:|right:|^error(\[|:)|test result:|^failures:|signal|killed" |
+                grep -E "panicked at|^---- |assertion|left:|right:|^error(\[|:)|test result:|^failures:|signal|killed" -A 3 |
                 head -150
             done
           } > /tmp/report.md
