@@ -195,6 +195,7 @@ pub mod debug;
 pub mod diff_viewer;
 pub mod editor;
 pub mod editorconfig;
+pub mod file_icons;
 pub mod file_watcher;
 pub mod filetree;
 pub mod git;

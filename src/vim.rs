@@ -444,20 +444,22 @@ impl VimState {
             }
             Pending::Find { op, kind } => {
                 let count = self.take_count();
-                if self.do_find(buffer, ch, kind, count) {
-                    if let Some(op) = op {
-                        let from = self.pending_anchor(buffer);
-                        let to = buffer.cursor();
-                        self.pending = None;
-                        self.finish_motion_operator(buffer, op, from, to, true, options);
-                        return;
+                match op {
+                    Some(op) => {
+                        // Operator + find motion (e.g. `df,`): anchor first.
+                        let anchor = buffer.cursor();
+                        if self.do_find(buffer, ch, kind, count) {
+                            let to = buffer.cursor();
+                            self.pending = None;
+                            self.finish_motion_operator(buffer, op, anchor, to, true, options);
+                        } else {
+                            self.pending = None;
+                        }
                     }
-                } else if op.is_some() {
-                    self.pending = None;
-                    return;
-                }
-                if op.is_none() {
-                    self.pending = None;
+                    None => {
+                        self.do_find(buffer, ch, kind, count);
+                        self.pending = None;
+                    }
                 }
             }
             Pending::Operator(op) => {
@@ -505,13 +507,6 @@ impl VimState {
     }
 
     fn pending_anchor(&self, buffer: &TextBuffer) -> CursorPosition {
-        // Recorded before executing the motion by callers that need it; for
-        // find-motion operators the anchor is the cursor *before* the find,
-        // which `process_pending` captured via `pending_anchor` after moving…
-        // instead we reconstruct from the buffer cursor minus the find delta:
-        // simplest correct approach is that `do_find` is called after the
-        // anchor was captured in `process_pending_motion`. Here we just return
-        // the current cursor (used when no better anchor exists).
         buffer.cursor()
     }
 
@@ -742,27 +737,40 @@ impl VimState {
                     let (text, _) = self.delete_lines(buffer, first, last);
                     self.register = text;
                     self.register_linewise = true;
+                    self.mode = VimMode::Normal;
+                    let line = first.min(buffer.len_lines().saturating_sub(1));
+                    self.set_cursor(
+                        buffer,
+                        CursorPosition {
+                            line,
+                            col: first_non_blank_col(buffer, line),
+                        },
+                    );
                 } else {
+                    let (start, _) = self.visual_char_range(buffer);
                     let range = self.visual_char_range(buffer);
                     let (text, _) = self.delete_range(buffer, range);
                     self.register = text;
                     self.register_linewise = false;
+                    self.mode = VimMode::Normal;
+                    self.set_cursor(buffer, start);
                 }
-                self.mode = VimMode::Normal;
-                self.clamp_cursor(buffer);
             }
             'y' => {
                 if linewise {
                     let (first, last) = self.visual_line_span(buffer);
                     self.yank_lines(buffer, first, last);
+                    self.mode = VimMode::Normal;
+                    self.set_cursor(buffer, CursorPosition { line: first, col: 0 });
                 } else {
+                    let (start, _) = self.visual_char_range(buffer);
                     let range = self.visual_char_range(buffer);
                     let (text, _) = self.extract_range(buffer, range);
                     self.register = text;
                     self.register_linewise = false;
+                    self.mode = VimMode::Normal;
+                    self.set_cursor(buffer, start);
                 }
-                self.mode = VimMode::Normal;
-                self.clamp_cursor(buffer);
             }
             'c' | 's' => {
                 if linewise {
@@ -1685,7 +1693,8 @@ impl VimState {
                 },
             );
         } else {
-            let chars_added = payload.chars().count().saturating_sub(1);
+            // Cursor lands on the last inserted character.
+            let chars_added = payload.chars().count();
             self.set_cursor(
                 buffer,
                 CursorPosition {
@@ -1779,11 +1788,17 @@ impl VimState {
     }
 
     fn jump_to_next_match(&mut self, buffer: &mut TextBuffer, pattern: &str, forward: bool) {
-        let needle: Vec<char> = pattern.chars().flat_map(|c| c.to_lowercase()).collect();
+        // ASCII-only case folding keeps 1:1 char alignment with the raw text,
+        // so folded offsets stay valid `char_index_to_position` indices.
+        let needle: Vec<char> = pattern.chars().map(|c| c.to_ascii_lowercase()).collect();
         if needle.is_empty() {
             return;
         }
-        let haystack: Vec<char> = buffer.text().chars().flat_map(|c| c.to_lowercase()).collect();
+        let haystack: Vec<char> = buffer
+            .text()
+            .chars()
+            .map(|c| c.to_ascii_lowercase())
+            .collect();
         let length = haystack.len();
         if length == 0 {
             return;
@@ -2576,7 +2591,7 @@ mod tests {
         chars(&mut b, &mut v, "vlllo");
         let (anchor, head) = b.primary_cursor().normalize();
         assert_eq!((anchor.line, anchor.col), (0, 0));
-        assert_eq!((head.line, head.col), (0, 0));
+        assert_eq!((head.line, head.col), (0, 3));
     }
 
     #[test]

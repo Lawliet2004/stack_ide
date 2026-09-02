@@ -92,8 +92,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use egui::{
-    pos2, vec2, Align, Color32, Event, FontId, Key, Modifiers, Rect, Response, ScrollArea, Sense,
-    Stroke, Ui, WidgetInfo, WidgetType,
+    pos2, vec2, Align, Align2, Color32, Event, FontId, Key, Modifiers, Rect, Response, ScrollArea,
+    Sense, Stroke, Ui, WidgetInfo, WidgetType,
 };
 
 use super::buffer::{CursorPosition, TextBuffer};
@@ -250,6 +250,8 @@ pub struct EditorPresentation {
     pub multi_cursor_modifier: MultiCursorModifier,
     /// Vim/modal editing enabled (`editor.vim_mode`).
     pub vim_enabled: bool,
+    /// Render diagnostic messages inline at end of line (Zed-style).
+    pub inline_diagnostics: bool,
 }
 
 impl EditorPresentation {
@@ -290,6 +292,7 @@ impl EditorPresentation {
                 _ => MultiCursorModifier::Alt,
             };
         self.vim_enabled = settings.vim_mode;
+        self.inline_diagnostics = settings.inline_diagnostics;
         self
     }
 
@@ -538,6 +541,7 @@ impl EditorWidget {
             indent_guide_active_color,
             multi_cursor_modifier,
             vim_enabled,
+            inline_diagnostics,
         } = presentation;
         buffer.set_bracket_features(bracket_colorization, bracket_matching);
         if state.last_path.as_deref() != buffer.path() {
@@ -1018,8 +1022,7 @@ impl EditorWidget {
                                     &line,
                                     font_id.clone(),
                                     text_color,
-                                    weak_text_color,
-                                );
+                                                             );
                             } else {
                                 // Normal syntax highlighting
                                 for section in &layout_job.sections {
@@ -1462,6 +1465,48 @@ impl EditorWidget {
                                     && hover_pos.is_some_and(|position| hit_rect.contains(position))
                                 {
                                     hovered_diagnostic = Some(diagnostic_index);
+                                }
+                            }
+
+                            // Zed-style inline diagnostic message at end of line.
+                            if inline_diagnostics {
+                                let on_line = diagnostics.iter().find(|diagnostic| {
+                                    lsp_utf16_range_char_span_on_line(
+                                        line_index,
+                                        &line,
+                                        diagnostic.line_start,
+                                        diagnostic.col_start,
+                                        diagnostic.line_end,
+                                        diagnostic.col_end,
+                                    )
+                                    .is_some()
+                                });
+                                if let Some(first) = on_line {
+                                    let message = first.message.lines().next().unwrap_or("").trim();
+                                    if !message.is_empty() {
+                                        const MAX_INLINE_MESSAGE_CHARS: usize = 120;
+                                        let text: String = if message.chars().count()
+                                            > MAX_INLINE_MESSAGE_CHARS
+                                        {
+                                            message
+                                                .chars()
+                                                .take(MAX_INLINE_MESSAGE_CHARS)
+                                                .collect()
+                                        } else {
+                                            message.to_owned()
+                                        };
+                                        let line_right = text_left + galley.size().x;
+                                        painter.text(
+                                            pos2(
+                                                line_right + 24.0,
+                                                y + shift + row_height * 0.5,
+                                            ),
+                                            Align2::LEFT_CENTER,
+                                            format!("● {text}"),
+                                            FontId::monospace(font_size * 0.85),
+                                            diagnostic_color(first.severity, palette.semantic),
+                                        );
+                                    }
                                 }
                             }
 
@@ -3042,5 +3087,8 @@ mod tests {
                     e
 /// Snapshot the monospace font size from a `FontId`.
 fn presentation_font_size_snapshot(font_id: &FontId) -> f32 {
+    font_id.size
+}
+32 {
     font_id.size
 }
