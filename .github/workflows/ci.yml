@@ -24,6 +24,7 @@ jobs:
       - name: cargo test (library suite)
         run: |
           set -o pipefail
+          cargo test --lib --no-run 2>&1 | tee /tmp/libbuild.log
           cargo test --lib 2>&1 | tee /tmp/lib.log
       - name: cargo test (integration guards)
         run: |
@@ -32,21 +33,16 @@ jobs:
       - name: surface failure names as annotations
         if: failure()
         run: |
-          for log in /tmp/check.log /tmp/lib.log /tmp/it.log; do
+          emit() { while IFS= read -r line; do echo "::error title=ci::$line"; done; }
+          for log in /tmp/check.log /tmp/libbuild.log /tmp/lib.log /tmp/it.log; do
             [ -f "$log" ] || continue
             sed 's/\x1b\[[0-9;]*m//g' "$log" > /tmp/plain.log
-            grep -E -A2 "^error(\[E[0-9]+\])?:|^error: " /tmp/plain.log | head -30 |
-              while IFS= read -r line; do
-                echo "::error title=ci::$line"
-              done
-            grep -E "^failures:$" -A 25 /tmp/plain.log | head -30 |
-              while IFS= read -r line; do
-                echo "::error title=ci-failures::$line"
-              done
-            # Fallback: dump the raw tail so the failure is always visible.
-            tail -20 /tmp/plain.log | while IFS= read -r line; do
-              echo "::error title=tail::$line"
-            done
+            # Priority 1: rustc errors with locations (4 annotations).
+            grep -E -A2 "^error(\[E[0-9]+\])?:|^error: " /tmp/plain.log | head -12 | emit
+            # Priority 2: failing test names from the failures block (3).
+            grep -E "^failures:$" -A 12 /tmp/plain.log | grep -E "^    [a-z_]+" | head -3 | emit
+            # Priority 3: crash / kill evidence (2).
+            grep -iE "signal [0-9]|sigkill|sigsegv|killed|out of memory" /tmp/plain.log | head -2 | emit
           done
           exit 0
       - name: cargo clippy
