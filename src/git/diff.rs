@@ -320,6 +320,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let repo = git2::Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        drop(cfg);
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
 
         let path = dir.join("file.txt");
@@ -359,6 +363,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let repo = git2::Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        drop(cfg);
         let path = dir.join("new.txt");
         std::fs::write(&path, "new content\n").unwrap();
 

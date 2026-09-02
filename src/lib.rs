@@ -186,13 +186,16 @@
 //! | B4 | Open **File → Settings** (or unsaved-close modal) | Modal blocks completion/hover; Escape or Cancel restores editor (see **Boundaries → Never** §4) |
 
 pub mod app;
+pub mod assistant;
 pub mod color_picker;
+pub mod vim;
 pub mod config;
 pub mod content_error;
 pub mod debug;
 pub mod diff_viewer;
 pub mod editor;
 pub mod editorconfig;
+pub mod file_icons;
 pub mod file_watcher;
 pub mod filetree;
 pub mod git;

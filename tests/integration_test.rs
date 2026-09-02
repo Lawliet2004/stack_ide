@@ -817,6 +817,22 @@ fn main() {
     println!("Integration test passed: highlighting works on Rust code");
 }
 
+/// Diagnostic helper: sorted distinct section colors as hex, for failure
+/// messages. Assertions below are unchanged; this only improves reports.
+fn distinct_colors(job: &egui::text::LayoutJob) -> Vec<String> {
+    let mut colors: Vec<u32> = job
+        .sections
+        .iter()
+        .map(|s| {
+            let c = s.format.color;
+            ((c.r() as u32) << 16) | ((c.g() as u32) << 8) | c.b() as u32
+        })
+        .collect();
+    colors.sort_unstable();
+    colors.dedup();
+    colors.iter().map(|c| format!("{c:#06x}")).collect()
+}
+
 #[test]
 fn test_highlight_keywords() {
     let code = "fn let if else";
@@ -830,7 +846,12 @@ fn test_highlight_keywords() {
         .sections
         .iter()
         .any(|s| s.format.color == keyword_color);
-    assert!(has_keyword, "Should highlight keywords in blue");
+    assert!(
+        has_keyword,
+        "Should highlight keywords in blue; expected {:?}, found colors {:?}",
+        keyword_color,
+        distinct_colors(&layout)
+    );
 }
 
 #[test]
@@ -846,7 +867,12 @@ fn test_highlight_strings() {
         .sections
         .iter()
         .any(|s| s.format.color == string_color);
-    assert!(has_string, "Should highlight strings in orange");
+    assert!(
+        has_string,
+        "Should highlight strings in orange; expected {:?}, found colors {:?}",
+        string_color,
+        distinct_colors(&layout)
+    );
 }
 
 #[test]
@@ -862,7 +888,12 @@ fn test_highlight_comments() {
         .sections
         .iter()
         .any(|s| s.format.color == comment_color);
-    assert!(has_comment, "Should highlight comments in green");
+    assert!(
+        has_comment,
+        "Should highlight comments in green; expected {:?}, found colors {:?}",
+        comment_color,
+        distinct_colors(&layout)
+    );
 }
 
 #[test]
@@ -878,7 +909,12 @@ fn test_highlight_numbers() {
         .sections
         .iter()
         .any(|s| s.format.color == number_color);
-    assert!(has_number, "Should highlight numbers in light green");
+    assert!(
+        has_number,
+        "Should highlight numbers in light green; expected {:?}, found colors {:?}",
+        number_color,
+        distinct_colors(&layout)
+    );
 }
 
 #[test]
