@@ -145,6 +145,18 @@ impl PendingOperator {
     }
 }
 
+/// Outcome of feeding one input to the state machine.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct VimResult {
+    /// The input was consumed by vim and must not reach the normal editor.
+    pub consumed: bool,
+    /// A `:` command that requires app-shell cooperation.
+    pub ex: Option<ExCommand>,
+    /// A `/` pattern was just accepted; the app should mirror it into the
+    /// search panel for highlighting.
+    pub search: Option<String>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct VimState {
     pub mode: VimMode,
