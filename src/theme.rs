@@ -162,129 +162,158 @@ fn visuals(scheme: ColorScheme, colors: SemanticPalette) -> Visuals {
     visuals.warn_fg_color = colors.warning;
     visuals.error_fg_color = colors.error;
     visuals.selection.bg_fill = colors.selection;
-    visuals.selection.stroke = Stroke::new(1.0, colors.primary_text);
+    visuals.selection.stroke = Stroke::NONE;
     visuals.window_stroke = Stroke::new(1.0, colors.border);
+    visuals.window_rounding = egui::Rounding::same(8.0);
+    visuals.menu_rounding = egui::Rounding::same(6.0);
+
+    // Zed uses neutral, ghost-style widgets: flat text at rest with a subtle
+    // rounded background appearing only on hover / press / open. The neutral
+    // steps mirror Zed's `element.hover` / `element.active` / `element.selected`.
+    let (hover_bg, active_bg, selected_bg) = match scheme {
+        ColorScheme::Dark => (rgb(0x363c46), rgb(0x454a56), rgb(0x454a56)),
+        ColorScheme::Light => (rgb(0xdfdfe0), rgb(0xcacaca), rgb(0xcacaca)),
+    };
+    let rounding = egui::Rounding::same(6.0);
+
     visuals.widgets.noninteractive.bg_fill = colors.panel_background;
     visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, colors.border);
     visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, colors.primary_text);
-    visuals.widgets.inactive.bg_fill = colors.elevated_background;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, colors.border);
+    visuals.widgets.noninteractive.rounding = rounding;
+
+    visuals.widgets.inactive.bg_fill = Color32::TRANSPARENT;
+    visuals.widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    visuals.widgets.inactive.bg_stroke = Stroke::NONE;
     visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, colors.primary_text);
-    visuals.widgets.hovered.bg_fill = blend(colors.elevated_background, colors.accent, 0.22);
+    visuals.widgets.inactive.rounding = rounding;
+
+    visuals.widgets.hovered.bg_fill = hover_bg;
+    visuals.widgets.hovered.weak_bg_fill = hover_bg;
     visuals.widgets.hovered.bg_stroke = Stroke::NONE;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, colors.primary_text);
-    visuals.widgets.active.bg_fill = blend(colors.elevated_background, colors.accent, 0.38);
+    visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, colors.primary_text);
+    visuals.widgets.hovered.rounding = rounding;
+
+    visuals.widgets.active.bg_fill = active_bg;
+    visuals.widgets.active.weak_bg_fill = active_bg;
     visuals.widgets.active.bg_stroke = Stroke::NONE;
-    visuals.widgets.active.fg_stroke = Stroke::new(1.5, colors.primary_text);
-    visuals.widgets.open.bg_fill = blend(colors.elevated_background, colors.accent, 0.28);
+    visuals.widgets.active.fg_stroke = Stroke::new(1.0, colors.primary_text);
+    visuals.widgets.active.rounding = rounding;
+
+    visuals.widgets.open.bg_fill = selected_bg;
+    visuals.widgets.open.weak_bg_fill = selected_bg;
     visuals.widgets.open.bg_stroke = Stroke::NONE;
     visuals.widgets.open.fg_stroke = Stroke::new(1.0, colors.primary_text);
+    visuals.widgets.open.rounding = rounding;
     visuals
-}
-
-fn blend(a: Color32, b: Color32, amount: f32) -> Color32 {
-    let mix = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * amount).round() as u8;
-    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
 }
 
 fn palette(semantic: SemanticPalette, syntax: SyntaxPalette) -> ThemePalette {
     ThemePalette { semantic, syntax }
 }
 
+/// The default dark theme: a faithful port of Zed's built-in "One Dark" theme.
+///
+/// Color model (from Zed's `assets/themes/one/one.json`):
+/// - Editor + active tab + toolbar: `editor.background` `#282c33`
+/// - Title bar + status bar: `background` `#3b414d`
+/// - Tab bar + side panels + popovers: `panel.background` `#2f343e`
+/// - Elements (inputs, menu rows): `element.background` `#2e343e`
+/// - Accent: `#74ade8` (matches Zed's One Dark `text.accent`).
 pub fn blue_dark() -> ThemePalette {
     palette(
         SemanticPalette {
-            ui_background: rgb(0x181a1f),
-            panel_background: rgb(0x20242b),
-            elevated_background: rgb(0x292e38),
-            editor_background: rgb(0x15181d),
-            primary_text: rgb(0xd4d4d4),
-            muted_text: rgb(0x9aa3ad),
-            selection: rgb(0x264f78),
-            inactive_selection: rgb(0x343a46),
-            accent: rgb(0x4daafc),
-            border: rgb(0x3b424d),
-            error: rgb(0xff6b6b),
-            warning: rgb(0xe5c07b),
-            information: rgb(0x61afef),
-            success: rgb(0x7ec699),
-            search_match: rgba(0x50a0ff, 70),
-            active_search_match: rgba(0xffa000, 125),
-            current_line: rgb(0x20252d),
-            completion_function: rgb(0xdcb4ff),
-            completion_type: rgb(0x78c8ff),
-            completion_field: rgb(0xb4dcb4),
-            completion_variable: rgb(0x96c8ff),
-            completion_module: rgb(0xffc878),
-            completion_keyword: rgb(0x78a0ff),
-            inlay_type_hint_text: rgb(0x7ec699),
-            inlay_type_hint_background: rgba(0x7ec699, 28),
-            inlay_parameter_hint_text: rgb(0x9aa3ad),
-            inlay_parameter_hint_background: rgba(0x4daafc, 22),
-            inlay_hint_border: rgba(0x3b424d, 180),
-            hover_code_background: rgb(0x1a1d23),
-            hover_link: rgb(0x4daafc),
+            ui_background: rgb(0x3b414d),
+            panel_background: rgb(0x2f343e),
+            elevated_background: rgb(0x2e343e),
+            editor_background: rgb(0x282c33),
+            primary_text: rgb(0xdce0e5),
+            muted_text: rgb(0xa9afbc),
+            selection: rgba(0x74ade8, 64),
+            inactive_selection: rgb(0x454a56),
+            accent: rgb(0x74ade8),
+            border: rgb(0x464b57),
+            error: rgb(0xd07277),
+            warning: rgb(0xdec184),
+            information: rgb(0x74ade8),
+            success: rgb(0xa1c181),
+            search_match: rgba(0x74ade8, 102),
+            active_search_match: rgba(0xe8af74, 102),
+            current_line: rgb(0x2c3138),
+            completion_function: rgb(0x73ade9),
+            completion_type: rgb(0x6eb4bf),
+            completion_field: rgb(0xd07277),
+            completion_variable: rgb(0xacb2be),
+            completion_module: rgb(0x6eb4bf),
+            completion_keyword: rgb(0xb477cf),
+            inlay_type_hint_text: rgb(0x788ca6),
+            inlay_type_hint_background: rgba(0x5a6f89, 26),
+            inlay_parameter_hint_text: rgb(0xa9afbc),
+            inlay_parameter_hint_background: rgba(0x74ade8, 26),
+            inlay_hint_border: rgba(0x464b57, 180),
+            hover_code_background: rgb(0x2e343e),
+            hover_link: rgb(0x74ade8),
         },
         SyntaxPalette {
-            default: rgb(0xd4d4d4),
-            comment: rgb(0x6a9955),
-            string: rgb(0xce9178),
-            number: rgb(0xb5cea8),
-            keyword: rgb(0x569cd6),
-            type_name: rgb(0x4ec9b0),
-            macro_name: rgb(0xdcdcaa),
-            lifetime: rgb(0x4fc1ff),
-            function: rgb(0xdcdcaa),
-            symbol: rgb(0xd4d4d4),
+            default: rgb(0xacb2be),
+            comment: rgb(0x5d636f),
+            string: rgb(0xa1c181),
+            number: rgb(0xbf956a),
+            keyword: rgb(0xb477cf),
+            type_name: rgb(0x6eb4bf),
+            macro_name: rgb(0xb477cf),
+            lifetime: rgb(0x74ade8),
+            function: rgb(0x73ade9),
+            symbol: rgb(0xacb2be),
         },
     )
 }
 
+/// The default light theme: a faithful port of Zed's built-in "One Light" theme.
 fn blue_light() -> ThemePalette {
     palette(
         SemanticPalette {
-            ui_background: rgb(0xf3f6fa),
-            panel_background: rgb(0xe8edf3),
-            elevated_background: rgb(0xffffff),
-            editor_background: rgb(0xfafcff),
-            primary_text: rgb(0x202733),
-            muted_text: rgb(0x667085),
-            selection: rgb(0xadd6ff),
-            inactive_selection: rgb(0xd8e6f3),
-            accent: rgb(0x0969da),
-            border: rgb(0xc5ced8),
-            error: rgb(0xb42318),
-            warning: rgb(0x8a5b00),
-            information: rgb(0x0969da),
-            success: rgb(0x18794e),
-            search_match: rgba(0x2f81f7, 55),
-            active_search_match: rgba(0xe3a008, 105),
-            current_line: rgb(0xedf4fb),
-            completion_function: rgb(0x7a3e9d),
-            completion_type: rgb(0x005a9c),
-            completion_field: rgb(0x27703f),
-            completion_variable: rgb(0x075985),
-            completion_module: rgb(0x9a4d00),
-            completion_keyword: rgb(0x174ea6),
-            inlay_type_hint_text: rgb(0x18794e),
-            inlay_type_hint_background: rgba(0x18794e, 22),
-            inlay_parameter_hint_text: rgb(0x667085),
-            inlay_parameter_hint_background: rgba(0x0969da, 18),
-            inlay_hint_border: rgba(0xc5ced8, 200),
-            hover_code_background: rgb(0xf0f4f8),
-            hover_link: rgb(0x0969da),
+            ui_background: rgb(0xdcdcdd),
+            panel_background: rgb(0xebebec),
+            elevated_background: rgb(0xebebec),
+            editor_background: rgb(0xfafafa),
+            primary_text: rgb(0x242529),
+            muted_text: rgb(0x58585a),
+            selection: rgba(0x5c78e2, 64),
+            inactive_selection: rgb(0xcacaca),
+            accent: rgb(0x5c78e2),
+            border: rgb(0xc9c9ca),
+            error: rgb(0xd36151),
+            warning: rgb(0xa48819),
+            information: rgb(0x5c78e2),
+            success: rgb(0x669f59),
+            search_match: rgba(0x5c79e2, 102),
+            active_search_match: rgba(0xd0a923, 102),
+            current_line: rgb(0xf1f1f2),
+            completion_function: rgb(0x5b79e3),
+            completion_type: rgb(0x3882b7),
+            completion_field: rgb(0xd3604f),
+            completion_variable: rgb(0x242529),
+            completion_module: rgb(0x3882b7),
+            completion_keyword: rgb(0xa449ab),
+            inlay_type_hint_text: rgb(0x7274a7),
+            inlay_type_hint_background: rgba(0x7274a7, 26),
+            inlay_parameter_hint_text: rgb(0x58585a),
+            inlay_parameter_hint_background: rgba(0x5c78e2, 26),
+            inlay_hint_border: rgba(0xc9c9ca, 200),
+            hover_code_background: rgb(0xebebec),
+            hover_link: rgb(0x5c78e2),
         },
         SyntaxPalette {
-            default: rgb(0x24292f),
-            comment: rgb(0x5c6370),
-            string: rgb(0xa31515),
-            number: rgb(0x098658),
-            keyword: rgb(0x0000ff),
-            type_name: rgb(0x267f99),
-            macro_name: rgb(0x795e26),
-            lifetime: rgb(0x006880),
-            function: rgb(0x795e26),
-            symbol: rgb(0x24292f),
+            default: rgb(0x242529),
+            comment: rgb(0xa2a3a7),
+            string: rgb(0x649f57),
+            number: rgb(0xad6e25),
+            keyword: rgb(0xa449ab),
+            type_name: rgb(0x3882b7),
+            macro_name: rgb(0xa449ab),
+            lifetime: rgb(0x5c78e2),
+            function: rgb(0x5b79e3),
+            symbol: rgb(0x242529),
         },
     )
 }
