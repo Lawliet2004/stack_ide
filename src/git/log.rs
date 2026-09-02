@@ -64,6 +64,10 @@ mod tests {
     fn temp_repo_with_commits(n: usize) -> (tempdir_like::TempDir, Repository) {
         let dir = tempdir_like::TempDir::new("blue_ide_git_log");
         let repo = Repository::init(dir.path()).unwrap();
+        let cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        drop(cfg);
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
         let mut parent_oid = None;
         for i in 0..n {
@@ -99,6 +103,10 @@ mod tests {
     fn empty_repo_returns_no_commits() {
         let dir = tempdir_like::TempDir::new("blue_ide_git_log_empty");
         let repo = Repository::init(dir.path()).unwrap();
+        let cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        drop(cfg);
         assert!(commit_log(&repo, 10).is_empty());
     }
 

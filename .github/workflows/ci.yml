@@ -39,8 +39,8 @@ jobs:
             sed 's/\x1b\[[0-9;]*m//g' "$log" > /tmp/plain.log
             # Priority 1: rustc errors with locations (4 annotations).
             grep -E -A2 "^error(\[E[0-9]+\])?:|^error: " /tmp/plain.log | head -12 | emit
-            # Priority 2: failing test names from the failures block (3).
-            grep -E "^failures:$" -A 12 /tmp/plain.log | grep -E "^    [a-z_]+" | head -3 | emit
+            # Priority 2: failing test names from the failures block (8).
+            grep -E "^failures:$" -A 20 /tmp/plain.log | grep -E "^    [a-zA-Z_:]+" | head -8 | emit
             # Priority 3: crash / kill evidence (2).
             grep -iE "signal [0-9]|sigkill|sigsegv|killed|out of memory" /tmp/plain.log | head -2 | emit
           done
