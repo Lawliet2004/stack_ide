@@ -187,8 +187,8 @@ impl Theme {
 
     pub const fn display_name(self) -> &'static str {
         match self {
-            Self::Dark => "Blue Dark",
-            Self::Light => "Blue Light",
+            Self::Dark => "One Dark",
+            Self::Light => "One Light",
             Self::System => "System",
             Self::Nord => "Nord",
             Self::Dracula => "Dracula",
