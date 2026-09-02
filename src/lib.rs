@@ -186,6 +186,7 @@
 //! | B4 | Open **File → Settings** (or unsaved-close modal) | Modal blocks completion/hover; Escape or Cancel restores editor (see **Boundaries → Never** §4) |
 
 pub mod app;
+pub mod chrome;
 pub mod color_picker;
 pub mod config;
 pub mod content_error;

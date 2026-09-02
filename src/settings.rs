@@ -74,6 +74,11 @@ pub struct AppearanceSettings {
     pub editor_font_size: f32,
     #[serde(default = "default_ui_scale")]
     pub ui_scale: f32,
+    /// Global UI density: `"compact"`, `"default"`, or `"comfortable"`. Mirrors Zed's
+    /// `ui_density` setting; unknown values fall back to `"default"` rather than
+    /// failing the whole settings file.
+    #[serde(default = "default_ui_density")]
+    pub ui_density: String,
     #[serde(default = "default_font_ligatures")]
     pub font_ligatures: bool,
     #[serde(default = "default_high_contrast")]
@@ -96,6 +101,10 @@ fn default_ui_scale() -> f32 {
     1.0
 }
 
+fn default_ui_density() -> String {
+    crate::chrome::Density::Default.as_str().to_owned()
+}
+
 fn default_font_ligatures() -> bool {
     false
 }
@@ -106,6 +115,7 @@ impl Default for AppearanceSettings {
             theme: default_theme(),
             editor_font_size: default_editor_font_size(),
             ui_scale: default_ui_scale(),
+            ui_density: default_ui_density(),
             font_ligatures: default_font_ligatures(),
             high_contrast: default_high_contrast(),
         }
@@ -696,6 +706,10 @@ mod tests {
         assert_eq!(settings.appearance.theme, Theme::Dark);
         assert_eq!(settings.appearance.editor_font_size, 14.0);
         assert_eq!(settings.appearance.ui_scale, 1.0);
+        assert_eq!(
+            settings.appearance.ui_density,
+            crate::chrome::Density::Default.as_str()
+        );
         assert_eq!(settings.editor.tab_width, 4);
         assert!(settings.editor.insert_spaces);
         assert!(!settings.panels.show_file_tree);
@@ -704,6 +718,25 @@ mod tests {
         assert!(settings.lsp.rust.enabled);
         assert_eq!(settings.lsp.rust.command, "rust-analyzer");
         assert!(settings.lsp.rust.args.is_empty());
+    }
+
+    #[test]
+    fn ui_density_parses_and_tolerates_unknown_values() {
+        let compact: Settings = toml::from_str("[appearance]\nui_density = \"compact\"\n").unwrap();
+        assert_eq!(compact.appearance.ui_density, "compact");
+        assert_eq!(
+            crate::chrome::Density::from_setting(&compact.appearance.ui_density).spacing_ratio(),
+            0.75
+        );
+
+        // A density word from a newer version must not invalidate the settings file;
+        // it resolves to the default rhythm instead.
+        let unknown: Settings = toml::from_str("[appearance]\nui_density = \"roomy\"\n").unwrap();
+        assert_eq!(unknown.appearance.ui_density, "roomy");
+        assert_eq!(
+            crate::chrome::Density::from_setting(&unknown.appearance.ui_density),
+            crate::chrome::Density::Default
+        );
     }
 
     #[test]

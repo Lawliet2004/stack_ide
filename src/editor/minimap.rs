@@ -198,15 +198,21 @@ impl MinimapState {
             vec2(minimap_rect.width(), vp_h.max(2.0)),
         );
         let vp_rect = clamp_rect_to(vp_rect, minimap_rect);
+        // The viewport is a scrim over the minimap's own surface rather than a fixed
+        // white overlay, so it stays visible on light themes too.
+        let minimap_surface = palette.semantic.panel_background;
         painter.rect_filled(
             vp_rect,
             0.0,
-            Color32::from_rgba_unmultiplied(255, 255, 255, 30),
+            crate::chrome::scrim_over(minimap_surface, 0.07),
         );
         painter.rect_stroke(
             vp_rect,
             0.0,
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 80)),
+            Stroke::new(
+                1.0,
+                crate::chrome::scrim_over(minimap_surface, 0.26),
+            ),
         );
 
         // ── Cursor indicator line ─────────────────────────────────────────────
@@ -219,7 +225,7 @@ impl MinimapState {
                     pos2(minimap_rect.left(), cursor_y),
                     pos2(minimap_rect.right(), cursor_y),
                 ],
-                Stroke::new(1.0, Color32::from_rgba_unmultiplied(255, 255, 255, 200)),
+                Stroke::new(1.0, palette.semantic.primary_text),
             );
         }
 

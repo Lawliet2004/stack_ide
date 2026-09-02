@@ -24,7 +24,8 @@ const ROW_LEFT_PAD: f32 = 8.0;
 const CHEVRON_W: f32 = 14.0;
 const TREE_ICON: f32 = 16.0;
 const ICON_TEXT_GAP: f32 = 6.0;
-const ROW_ROUNDING: f32 = 5.0;
+/// Rows share the shell's control radius rather than a per-module preference.
+const ROW_ROUNDING: f32 = crate::chrome::RADIUS_WIDGET;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CreateKind {
@@ -765,10 +766,10 @@ fn render_node(
     let highlight = rect.shrink2(vec2(3.0, 1.0));
     if selected {
         ui.painter()
-            .rect_filled(highlight, ROW_ROUNDING, tree_selection_fill());
+            .rect_filled(highlight, ROW_ROUNDING, tree_selection_fill(ui));
     } else if response.hovered() {
         ui.painter()
-            .rect_filled(highlight, ROW_ROUNDING, tree_hover_fill());
+            .rect_filled(highlight, ROW_ROUNDING, tree_hover_fill(ui));
     }
 
     // Three aligned columns: chevron | icon | text. Every item at the same
@@ -789,7 +790,7 @@ fn render_node(
     // Drawn after the row highlight so they sit beneath the glyphs and read as
     // continuous lines across stacked rows.
     if !selected {
-        let guide = Color32::from_white_alpha(13);
+        let guide = crate::chrome::scrim_over(ui.visuals().panel_fill, 0.05);
         for level in 0..depth {
             let gx = (rect.left() + ROW_LEFT_PAD + level as f32 * INDENT_WIDTH
                 + CHEVRON_W * 0.5)
@@ -810,7 +811,8 @@ fn render_node(
 
     // Type icon.
     if is_dir {
-        paint_tree_folder(ui.painter(), icon_rect, folder_icon_color());
+        let folder_color = folder_icon_color(ui);
+        paint_tree_folder(ui.painter(), icon_rect, folder_color);
     } else {
         let icon_color = if conflicted {
             Color32::from_rgb(220, 90, 90)
@@ -865,19 +867,24 @@ fn render_node(
     }
 }
 
-/// Muted blue-gray fill for the selected row.
-fn tree_selection_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(116, 132, 170, 56)
+/// Fill for the selected row.
+///
+/// Derived from the panel it sits on: a fixed translucent blue-gray matched one theme and
+/// washed out beside every other one.
+fn tree_selection_fill(ui: &egui::Ui) -> Color32 {
+    crate::chrome::row_selected(ui.visuals().panel_fill)
 }
 
-/// Very subtle lightening for the hovered row.
-fn tree_hover_fill() -> Color32 {
-    Color32::from_rgba_unmultiplied(255, 255, 255, 14)
+/// Very subtle tint for the hovered row. A white alpha overlay is invisible on a light
+/// theme, so the scrim direction follows the surface instead of being hard-coded.
+fn tree_hover_fill(ui: &egui::Ui) -> Color32 {
+    crate::chrome::row_hover(ui.visuals().panel_fill)
 }
 
-/// Muted gray-blue used for folder glyphs.
-fn folder_icon_color() -> Color32 {
-    Color32::from_rgb(118, 131, 156)
+/// Muted color for folder glyphs, taken from the theme's secondary text step so the
+/// icons and the labels next to them stay in the same family.
+fn folder_icon_color(ui: &egui::Ui) -> Color32 {
+    ui.visuals().weak_text_color()
 }
 
 /// Lowercased file extension for `name`, or an empty string when there is none.

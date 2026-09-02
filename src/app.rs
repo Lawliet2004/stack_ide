@@ -259,7 +259,7 @@ impl BlueIdeApp {
             .exact_height(TITLE_BAR_HEIGHT)
             .frame(
                 egui::Frame::none()
-                    .fill(palette.panel_background)
+                    .fill(crate::chrome::chrome_fill(&palette))
                     .inner_margin(egui::Margin::same(0.0)),
             )
             .show(context, |ui| {
@@ -292,19 +292,12 @@ impl BlueIdeApp {
                 left_ui.add_space(8.0);
 
                 left_ui.add_enabled_ui(!self.has_modal(), |ui| {
-                    ui.spacing_mut().button_padding = egui::vec2(5.0, 1.0);
-                    ui.style_mut().override_font_id = Some(egui::FontId::proportional(12.0));
-                    ui.spacing_mut().item_spacing.x = 2.0;
-
-                    // Flat menu labels: no box behind the items at rest. A subtle
-                    // background only appears on hover / when the menu is open.
-                    let widgets = &mut ui.visuals_mut().widgets;
-                    widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
-                    widgets.inactive.bg_fill = Color32::TRANSPARENT;
-                    widgets.inactive.bg_stroke = egui::Stroke::NONE;
-                    widgets.active.bg_stroke = egui::Stroke::NONE;
-                    widgets.hovered.bg_stroke = egui::Stroke::NONE;
-                    widgets.open.bg_stroke = egui::Stroke::NONE;
+                    ui.spacing_mut().button_padding = egui::vec2(6.0, 2.0);
+                    ui.style_mut()
+                        .override_font_id = Some(egui::FontId::proportional(crate::chrome::UI_FONT));
+                    ui.spacing_mut().item_spacing.x = 1.0;
+                    // Menu labels stay flat at rest and pick up a hover frame from the
+                    // theme's widget states; no per-widget overrides needed here.
 
                     ui.menu_button(TOP_MENU_LABELS[0], |ui| {
                         if ui.button("Quick Open...     Ctrl+P").clicked() {
@@ -651,21 +644,21 @@ impl BlueIdeApp {
                 if Self::paint_window_control(
                     &mut right_ui,
                     WindowControl::Close,
-                    palette.primary_text,
+                    &palette,
                 ) {
                     context.send_viewport_cmd(ViewportCommand::Close);
                 }
                 if Self::paint_window_control(
                     &mut right_ui,
                     WindowControl::Maximize { maximized },
-                    palette.primary_text,
+                    &palette,
                 ) {
                     context.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
                 }
                 if Self::paint_window_control(
                     &mut right_ui,
                     WindowControl::Minimize,
-                    palette.primary_text,
+                    &palette,
                 ) {
                     context.send_viewport_cmd(ViewportCommand::Minimized(true));
                 }
@@ -758,9 +751,9 @@ impl BlueIdeApp {
             ui.allocate_exact_size(egui::vec2(26.0, TITLE_BAR_HEIGHT), egui::Sense::click());
         if response.hovered() {
             ui.painter().rect_filled(
-                rect.shrink2(egui::vec2(2.0, 6.0)),
-                5.0,
-                Color32::from_white_alpha(20),
+                rect.shrink2(egui::vec2(1.0, 5.0)),
+                crate::chrome::RADIUS_WIDGET,
+                crate::chrome::hover_on(palette.panel_background, &palette),
             );
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
@@ -806,16 +799,20 @@ impl BlueIdeApp {
             ui.allocate_exact_size(egui::vec2(34.0, TITLE_BAR_HEIGHT), egui::Sense::click());
         if response.hovered() {
             ui.painter().rect_filled(
-                rect.shrink2(egui::vec2(3.0, 6.0)),
-                5.0,
-                Color32::from_white_alpha(20),
+                rect.shrink2(egui::vec2(3.0, 5.0)),
+                crate::chrome::RADIUS_WIDGET,
+                crate::chrome::hover_on(palette.panel_background, &palette),
             );
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let _icon_id = ui.id().with("toolbar_icon").with(format!("{icon:?}"));
         {
             let painter = ui.painter();
-            let color = palette.muted_text;
+            let color = if response.hovered() {
+                palette.primary_text
+            } else {
+                palette.muted_text
+            };
             let stroke = egui::Stroke::new(1.3, color);
             let c = rect.center();
             match icon {
@@ -928,15 +925,31 @@ impl BlueIdeApp {
             ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
         }
         let focused = response.has_focus();
-        let stroke_color = if focused || response.hovered() {
-            palette.accent
+        let surface = palette.ui_background;
+        // At rest the field is separated from the bar by its fill alone; the stroke is
+        // reserved for interaction, so focus reads as a ring rather than a permanent box.
+        let stroke_color = if focused {
+            crate::chrome::focus_ring(&palette)
+        } else if response.hovered() {
+            crate::chrome::mix(
+                crate::chrome::divider_on(surface, &palette),
+                palette.accent,
+                0.45,
+            )
         } else {
-            palette.border
+            crate::chrome::divider_on(surface, &palette)
         };
 
-        let font = egui::FontId::proportional(12.0);
+        let font = egui::FontId::proportional(crate::chrome::UI_FONT);
+        let hint_font = egui::FontId::proportional(crate::chrome::UI_FONT_SMALL);
         let text_w = ui.fonts(|f| {
             f.layout_no_wrap(label.to_owned(), font.clone(), palette.muted_text)
+                .size()
+                .x
+        });
+        let hint = "Ctrl+P";
+        let hint_w = ui.fonts(|f| {
+            f.layout_no_wrap(hint.to_owned(), hint_font.clone(), palette.muted_text)
                 .size()
                 .x
         });
@@ -944,10 +957,33 @@ impl BlueIdeApp {
         let painter = ui.painter();
         painter.rect(
             rect,
-            egui::Rounding::same(6.0),
-            palette.ui_background,
-            egui::Stroke::new(1.0, stroke_color),
+            egui::Rounding::same(crate::chrome::RADIUS_PANEL),
+            surface,
+            egui::Stroke::new(crate::chrome::HAIRLINE, stroke_color),
         );
+
+        // The shortcut hint lives on the right edge, where a real field would show it.
+        // Only drawn when the bar is wide enough to keep the label centered and clear.
+        let chip_pad = 4.0;
+        let chip_w = hint_w + chip_pad * 2.0;
+        if rect.width() > group_hint_room(text_w, chip_w) {
+            let chip = egui::Rect::from_min_size(
+                egui::pos2(rect.right() - chip_w - 6.0, rect.center().y - 7.0),
+                egui::vec2(chip_w, 14.0),
+            );
+            painter.rect_filled(
+                chip,
+                egui::Rounding::same(crate::chrome::RADIUS_CHIP),
+                crate::chrome::hover_on(surface, &palette),
+            );
+            painter.text(
+                chip.center(),
+                egui::Align2::CENTER_CENTER,
+                hint,
+                hint_font.clone(),
+                palette.muted_text,
+            );
+        }
 
         // Center a [magnifier | label] group horizontally inside the pill.
         let icon_w = 11.0;
@@ -982,17 +1018,35 @@ impl BlueIdeApp {
             || activated_by_key
     }
 
-    fn paint_window_control(ui: &mut egui::Ui, control: WindowControl, color: Color32) -> bool {
+    fn paint_window_control(
+        ui: &mut egui::Ui,
+        control: WindowControl,
+        palette: &crate::theme::SemanticPalette,
+    ) -> bool {
         let (rect, response) =
             ui.allocate_exact_size(egui::vec2(46.0, TITLE_BAR_HEIGHT), egui::Sense::click());
+        let close = control == WindowControl::Close;
+        let surface = crate::chrome::chrome_fill(palette);
         if response.hovered() {
-            let hover = if control == WindowControl::Close {
-                Color32::from_rgb(196, 43, 28)
+            // Close is the only control with a semantic hover; painting all three in
+            // red would turn the trailing cluster into a warning strip.
+            let hover = if close {
+                crate::chrome::mix(surface, Color32::from_rgb(196, 43, 28), 0.92)
             } else {
-                Color32::from_white_alpha(24)
+                crate::chrome::hover_on(surface, palette)
             };
             ui.painter().rect_filled(rect, 0.0, hover);
         }
+
+        // Muted at rest, primary on hover, and white over the filled close hover so the
+        // glyph stays legible on both light and dark themes.
+        let color = if close && response.hovered() {
+            Color32::WHITE
+        } else if response.hovered() {
+            palette.primary_text
+        } else {
+            palette.muted_text
+        };
 
         let center = rect.center();
         let stroke = egui::Stroke::new(1.0, color);
@@ -1268,63 +1322,6 @@ impl BottomPanelTab {
     }
 }
 
-/// Paint a single VS Code-style panel tab: flat text that is muted when
-/// inactive, brightened on hover, and underlined with the accent color when
-/// active. Returns the click response.
-fn paint_panel_tab(
-    ui: &mut egui::Ui,
-    text: &str,
-    active: bool,
-    palette: crate::theme::SemanticPalette,
-) -> egui::Response {
-    // VS Code renders panel tab labels in uppercase.
-    let label = text.to_uppercase();
-    let font = egui::FontId::proportional(11.0);
-    let text_w = ui.fonts(|f| {
-        f.layout_no_wrap(label.clone(), font.clone(), palette.primary_text)
-            .size()
-            .x
-    });
-    let pad_x = 10.0;
-    let height = ui.available_height().max(1.0);
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(text_w + pad_x * 2.0, height), egui::Sense::click());
-
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
-        if !active {
-            ui.painter()
-                .rect_filled(rect, 0.0, Color32::from_white_alpha(10));
-        }
-    }
-
-    let text_color = if active || response.hovered() {
-        palette.primary_text
-    } else {
-        palette.muted_text
-    };
-    ui.painter().text(
-        egui::pos2(rect.left() + pad_x, rect.center().y),
-        egui::Align2::LEFT_CENTER,
-        label,
-        font,
-        text_color,
-    );
-
-    if active {
-        let y = rect.bottom() - 1.5;
-        ui.painter().line_segment(
-            [
-                egui::pos2(rect.left() + pad_x * 0.5, y),
-                egui::pos2(rect.right() - pad_x * 0.5, y),
-            ],
-            egui::Stroke::new(2.0, palette.accent),
-        );
-    }
-
-    response
-}
-
 /// Action icons drawn in the bottom-panel's right-hand toolbar.
 #[derive(Clone, Copy)]
 enum TermToolIcon {
@@ -1347,8 +1344,8 @@ fn paint_term_tool(
     if response.hovered() {
         ui.painter().rect_filled(
             rect.shrink2(egui::vec2(2.0, 3.0)),
-            4.0,
-            Color32::from_white_alpha(20),
+            crate::chrome::RADIUS_WIDGET,
+            crate::chrome::hover_on(palette.panel_background, &palette),
         );
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
@@ -1694,20 +1691,28 @@ impl BlueIdeApp {
         let mut font_defs = egui::FontDefinitions::default();
         font_loader::load_ligature_font(&mut font_defs);
         ctx.set_fonts(font_defs);
-        
-        if appearance.high_contrast {
+
+        let palette = if appearance.high_contrast {
+            // High contrast picks every color itself to hold its WCAG AA pairs, so only
+            // density is applied on top of it: geometry cannot weaken a contrast ratio,
+            // but a derived hover tint could.
             ctx.set_visuals(crate::theme::high_contrast_theme());
-            // Return a default palette (not used when high contrast is active)
             crate::theme::blue_dark()
         } else {
             let theme = built_in_theme(appearance.theme, system_scheme);
+            let palette = theme.palette;
             ctx.set_visuals(theme.visuals);
-            ctx.set_pixels_per_point(appearance.ui_scale);
-            // Drive zoom exclusively through `ui_scale`/`pixels_per_point`; disable
-            // egui's built-in keyboard zoom so Ctrl +/-/0 aren't applied twice.
-            ctx.options_mut(|options| options.zoom_with_keyboard = false);
-            theme.palette
-        }
+            palette
+        };
+
+        crate::chrome::apply_density(ctx, crate::chrome::Density::from_setting(&appearance.ui_density));
+
+        // Drive zoom exclusively through `ui_scale`/`pixels_per_point`; disable
+        // egui's built-in keyboard zoom so Ctrl +/-/0 aren't applied twice.
+        ctx.set_pixels_per_point(appearance.ui_scale);
+        ctx.options_mut(|options| options.zoom_with_keyboard = false);
+
+        palette
     }
 
     #[cfg(test)]
@@ -2868,6 +2873,31 @@ impl BlueIdeApp {
                             {
                                 preview_changed = true;
                             }
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("UI density:");
+                            let current =
+                                crate::chrome::Density::from_setting(&draft.appearance.ui_density);
+                            egui::ComboBox::from_id_source("appearance_ui_density")
+                                .selected_text(current.as_str())
+                                .show_ui(ui, |ui| {
+                                    for density in [
+                                        crate::chrome::Density::Compact,
+                                        crate::chrome::Density::Default,
+                                        crate::chrome::Density::Comfortable,
+                                    ] {
+                                        if ui
+                                            .selectable_value(
+                                                &mut draft.appearance.ui_density,
+                                                density.as_str().to_owned(),
+                                                density.as_str(),
+                                            )
+                                            .changed()
+                                        {
+                                            preview_changed = true;
+                                        }
+                                    }
+                                });
                         });
                         ui.horizontal(|ui| {
                             ui.label("Editor font size:");
@@ -6246,17 +6276,46 @@ impl BlueIdeApp {
 
         egui::TopBottomPanel::bottom("status")
             .min_height(24.0)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::none()
+                    .fill(crate::chrome::chrome_fill(&palette))
+                    .inner_margin(egui::Margin::symmetric(5.0, 1.0)),
+            )
             .show(context, |ui| {
                 ui.horizontal(|ui| {
-                    let path = self
+                    ui.spacing_mut().item_spacing.x = 7.0;
+                    // The document's own name carries the weight; its directory is
+                    // context, so it stays in the ramp's quiet step.
+                    let (file_label, dir_label) = self
                         .active
                         .as_ref()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_else(|| "No file open".to_owned());
-                    ui.label(path);
+                        .map(|path| {
+                            let dir = path
+                                .parent()
+                                .map(|parent| parent.display().to_string())
+                                .unwrap_or_default();
+                            (file_name(path), dir)
+                        })
+                        .unwrap_or_else(|| ("No file open".to_owned(), String::new()));
+                    ui.label(
+                        RichText::new(file_label)
+                            .size(crate::chrome::UI_FONT_SMALL)
+                            .color(palette.primary_text),
+                    );
+                    if !dir_label.is_empty() {
+                        ui.label(
+                            RichText::new(dir_label)
+                                .size(crate::chrome::UI_FONT_SMALL)
+                                .color(palette.muted_text),
+                        );
+                    }
 
                     if let Some(error) = &self.error_message {
-                        ui.colored_label(self.active_palette.semantic.error, RichText::new(error));
+                        ui.colored_label(
+                            palette.error,
+                            RichText::new(error).size(crate::chrome::UI_FONT_SMALL),
+                        );
                     }
                     // Plugin notifications (most-recent one, auto-expiring)
                     if let Some(notif) = self.plugin_system.notifications.last() {
@@ -6267,27 +6326,35 @@ impl BlueIdeApp {
                         };
                         ui.colored_label(
                             color,
-                            RichText::new(format!("[{}] {}", notif.plugin_name, notif.message)),
+                            RichText::new(format!("[{}] {}", notif.plugin_name, notif.message))
+                                .size(crate::chrome::UI_FONT_SMALL),
                         );
                     }
                     for warning in self.lsp_warnings.values() {
                         ui.colored_label(
-                            self.active_palette.semantic.warning,
-                            RichText::new(warning),
+                            palette.warning,
+                            RichText::new(warning).size(crate::chrome::UI_FONT_SMALL),
                         );
                     }
                     if let Some(warning) = &self.config_warning {
                         ui.colored_label(
-                            self.active_palette.semantic.warning,
-                            RichText::new(warning),
+                            palette.warning,
+                            RichText::new(warning).size(crate::chrome::UI_FONT_SMALL),
                         );
                     }
 
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        let term_resp = ui.selectable_label(
-                            terminal_active,
-                            RichText::new("Terminal").monospace(),
-                        );
+                        // One small type size and one quiet text color for the whole
+                        // read-only cluster; interactive items brighten on their own.
+                        ui.style_mut().override_font_id =
+                            Some(egui::FontId::proportional(crate::chrome::UI_FONT_SMALL));
+                        ui.visuals_mut()
+                            .widgets
+                            .noninteractive
+                            .fg_stroke
+                            .color = palette.muted_text;
+                        let term_resp =
+                            crate::chrome::chrome_toggle(ui, "Terminal", terminal_active, &palette);
                         let term_resp = crate::screen_reader::label_element(
                             ui,
                             term_resp,
@@ -6305,16 +6372,16 @@ impl BlueIdeApp {
                                 let mb = rss as f64 / (1024.0 * 1024.0);
                                 let text = crate::perf::memory::format_bytes(rss);
                                 let color = if mb > 500.0 {
-                                    Color32::from_rgb(255, 80, 80)
+                                    self.active_palette.semantic.error
                                 } else if mb > 200.0 {
-                                    Color32::from_rgb(255, 200, 50)
+                                    self.active_palette.semantic.warning
                                 } else {
                                     self.active_palette.semantic.muted_text
                                 };
                                 (text, color)
                             };
                             let mem_resp = ui
-                                .colored_label(mem_color, RichText::new(&mem_text).monospace().size(11.0))
+                                .colored_label(mem_color, RichText::new(&mem_text).monospace().size(crate::chrome::UI_FONT_SMALL))
                                 .on_hover_ui(|ui| {
                                     ui.label(egui::RichText::new("IDE Memory Usage").strong());
                                     ui.label(format!("RSS: {}", crate::perf::memory::format_bytes(rss)));
@@ -6337,30 +6404,35 @@ impl BlueIdeApp {
                             ui.separator();
                         }
 
-                        if counts.errors > 0 {
-                            let label =
-                                RichText::new(format!("✖ {}", counts.errors)).color(palette.error);
-                            if ui
-                                .selectable_label(problems_active, label)
-                                .on_hover_text("Show Problems (Ctrl+Shift+M)")
-                                .clicked()
-                            {
-                                toggle_problems = true;
-                            }
+                        // Severity travels on a painted dot; the count stays in the
+                        // label's own color so both remain legible on any theme.
+                        let problems_label = if counts.errors > 0 {
+                            format!("{} error{}", counts.errors, if counts.errors == 1 { "" } else { "s" })
                         } else if counts.warnings > 0 {
-                            let label = RichText::new(format!("⚠ {}", counts.warnings))
-                                .color(palette.warning);
-                            if ui
-                                .selectable_label(problems_active, label)
-                                .on_hover_text("Show Problems (Ctrl+Shift+M)")
-                                .clicked()
-                            {
-                                toggle_problems = true;
-                            }
-                        } else if ui
-                            .selectable_label(problems_active, "Problems")
-                            .on_hover_text("Show Problems (Ctrl+Shift+M)")
-                            .clicked()
+                            format!(
+                                "{} warning{}",
+                                counts.warnings,
+                                if counts.warnings == 1 { "" } else { "s" }
+                            )
+                        } else {
+                            "Problems".to_owned()
+                        };
+                        let problems_tint = if counts.errors > 0 {
+                            palette.error
+                        } else if counts.warnings > 0 {
+                            palette.warning
+                        } else {
+                            palette.muted_text
+                        };
+                        if crate::chrome::chrome_status_item(
+                            ui,
+                            &problems_label,
+                            problems_tint,
+                            problems_active,
+                            &palette,
+                        )
+                        .on_hover_text("Show Problems (Ctrl+Shift+M)")
+                        .clicked()
                         {
                             toggle_problems = true;
                         }
@@ -6381,8 +6453,12 @@ impl BlueIdeApp {
                                 ui.label("500+ matches — showing first 500");
                             }
                             if buffer.is_modified() {
-                                ui.separator();
-                                ui.label("● Modified");
+                                ui.label(
+                                    RichText::new("\u{25cf}")
+                                        .size(crate::chrome::UI_FONT_SMALL)
+                                        .color(palette.accent),
+                                )
+                                .on_hover_text("Unsaved changes");
                             }
                             ui.separator();
                             ui.label(language_label(path));
@@ -6474,6 +6550,16 @@ impl BlueIdeApp {
             .min_height(120.0)
             .max_height(600.0)
             .default_height(self.bottom_panel_height)
+            .frame(
+                egui::Frame::none()
+                    .fill(crate::chrome::chrome_fill(&self.active_palette.semantic))
+                    .inner_margin(egui::Margin {
+                        left: 0.0,
+                        right: 6.0,
+                        top: 0.0,
+                        bottom: 4.0,
+                    }),
+            )
             .show(context, |ui| {
                 ui.set_enabled(!self.has_modal());
                 let full_rect = ui.max_rect();
@@ -6487,10 +6573,10 @@ impl BlueIdeApp {
                     egui::vec2(ui.available_width(), 28.0),
                     egui::Layout::left_to_right(egui::Align::Center),
                     |ui| {
-                    ui.spacing_mut().item_spacing.x = 0.0;
+                    ui.spacing_mut().item_spacing.x = 2.0;
                     ui.spacing_mut().button_padding = egui::vec2(8.0, 2.0);
                     let tab_palette = self.active_palette.semantic;
-                    // Left: VS Code style category tabs.
+                    // Left: panel categories, flat until hovered.
                     for tab in BottomPanelTab::ALL {
                         let active = self.bottom_panel_tab == tab;
                         let label = if tab == BottomPanelTab::Problems && problem_counts.total > 0 {
@@ -6509,7 +6595,7 @@ impl BlueIdeApp {
                             BottomPanelTab::Ports => "Toggle ports panel",
                             BottomPanelTab::Profiler => "Toggle profiler panel",
                         };
-                        if paint_panel_tab(ui, &label, active, tab_palette)
+                        if crate::chrome::chrome_toggle(ui, &label, active, &tab_palette)
                             .on_hover_text(a11y_label)
                             .clicked()
                         {
@@ -7108,8 +7194,21 @@ impl BlueIdeApp {
             .unwrap_or_default();
         let modal_open = self.has_modal();
 
+        let palette = self.active_palette.semantic;
         egui::SidePanel::left("file_tree")
-            .default_width(200.0)
+            .default_width(220.0)
+            .resizable(true)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::none()
+                    .fill(crate::chrome::chrome_fill(&palette))
+                    .inner_margin(egui::Margin {
+                        left: 0.0,
+                        right: 0.0,
+                        top: 2.0,
+                        bottom: 4.0,
+                    }),
+            )
             .show(context, |ui| {
                 ui.set_enabled(!modal_open);
                 ui.spacing_mut().item_spacing.y = 0.0;
@@ -7145,8 +7244,16 @@ impl BlueIdeApp {
         let stash_msg = &mut self.git_stash_msg;
 
         let mut action = GitPanelAction::None;
+        let palette = self.active_palette.semantic;
         egui::SidePanel::left("git_panel")
-            .default_width(240.0)
+            .default_width(260.0)
+            .resizable(true)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::none()
+                    .fill(crate::chrome::chrome_fill(&palette))
+                    .inner_margin(egui::Margin::symmetric(8.0, 6.0)),
+            )
             .show(context, |ui| {
                 ui.set_enabled(!modal_open);
                 egui::ScrollArea::vertical()
@@ -7843,12 +7950,19 @@ impl BlueIdeApp {
         let mut activate = None;
         let mut close = None;
         let mut revealed_active = false;
-        let tab_frame = egui::Frame::side_top_panel(&context.style()).inner_margin(egui::Margin {
-            left: 0.0,
-            right: 8.0,
-            top: 0.0,
-            bottom: 0.0,
-        });
+        // The strip shares the dock surface; the active tab is then a hole cut into the
+        // editor below it rather than a highlighted row.
+        let palette = self.active_palette.semantic;
+        let tab_surface = crate::chrome::chrome_fill(&palette);
+        let tab_frame = egui::Frame::none()
+            .fill(tab_surface)
+            .rounding(egui::Rounding::same(0.0))
+            .inner_margin(egui::Margin {
+                left: 0.0,
+                right: 4.0,
+                top: 0.0,
+                bottom: 0.0,
+            });
 
         egui::TopBottomPanel::top("tabs")
             .exact_height(TAB_STRIP_HEIGHT)
@@ -7861,92 +7975,96 @@ impl BlueIdeApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            ui.spacing_mut().item_spacing.x = 2.0;
+                            // Tabs butt against each other; the hairline between two
+                            // inactive tabs is painted per-pair below.
+                            ui.spacing_mut().item_spacing.x = 0.0;
                             let tabs: Vec<(PathBuf, bool)> = self.buffers.iter()
                                 .map(|(p, b)| (p.clone(), b.is_modified()))
                                 .collect();
+                            // The previous tab's rect and active flag, so a hairline can
+                            // be drawn only where two *inactive* tabs meet.
+                            let mut previous: Option<(egui::Rect, bool)> = None;
                             for (path, is_modified) in tabs {
                                 let name = file_name(&path);
-                                let title = if is_modified {
-                                    format!("● {name}")
-                                } else {
-                                    name.clone()
-                                };
                                 let is_active = active.as_ref() == Some(&path);
                                 let is_pinned = self.pinned_tabs.contains(&path);
-                                let text_color = if is_active {
-                                    ui.visuals().strong_text_color()
+                                let short = truncate_tab_label(&name);
+                                let title = if is_modified {
+                                    format!("{short} (modified)")
                                 } else {
-                                    ui.visuals().weak_text_color()
+                                    short
                                 };
                                 let mut tab = egui::Frame::none()
                                     .fill(tab_fill(ui.visuals(), is_active))
                                     .rounding(tab_rounding(is_active))
                                     .inner_margin(egui::Margin {
-                                        left: 6.0,
-                                        right: 3.0,
+                                        left: 7.0,
+                                        right: 6.0,
                                         top: 0.0,
                                         bottom: 0.0,
                                     })
                                     .begin(ui);
-                                tab.content_ui.set_min_width(72.0);
+                                tab.content_ui.set_min_width(104.0);
                                 tab.content_ui.set_min_height(TAB_STRIP_HEIGHT);
-                                
-                                let close_clicked = tab
+
+                                let _ = tab
                                     .content_ui
                                     .horizontal_centered(|ui| {
-                                        ui.spacing_mut().item_spacing.x = 3.0;
+                                        ui.spacing_mut().item_spacing.x = 4.0;
 
-                                        // Render Group Badge if grouped
-                                        let group_name = self.tab_to_group.get(&path);
-                                        if let Some(gname) = group_name {
+                                        // A tab group reads as a column tint: a full-height
+                                        // stripe on the tab's leading edge.
+                                        if let Some(gname) = self.tab_to_group.get(&path) {
                                             let color = get_group_color(&self.tab_groups, gname);
-                                            let (rect, _) = ui.allocate_exact_size(egui::vec2(4.0, 12.0), egui::Sense::hover());
-                                            ui.painter().rect_filled(rect, egui::Rounding::same(1.0), color);
+                                            let (rect, _) = ui.allocate_exact_size(
+                                                egui::vec2(3.0, TAB_STRIP_HEIGHT),
+                                                egui::Sense::hover(),
+                                            );
+                                            ui.painter()
+                                                .rect_filled(rect, egui::Rounding::same(0.0), color);
                                             ui.label(
                                                 RichText::new(gname)
                                                     .size(9.0)
                                                     .color(color)
-                                                    .strong()
+                                                    .strong(),
                                             );
                                         }
 
                                         ui.label(
-                                            RichText::new(truncate_tab_label(&title))
-                                                .size(11.0)
-                                                .color(text_color),
+                                            RichText::new(elide_middle(&name, 26))
+                                                .size(crate::chrome::UI_FONT)
+                                                .color(if is_active {
+                                                    ui.visuals().strong_text_color()
+                                                } else {
+                                                    ui.visuals().weak_text_color()
+                                                }),
                                         );
 
-                                        if is_pinned {
-                                            ui.label(RichText::new("📌").size(10.0));
-                                            false
-                                        } else {
-                                            let _close_id = ui.id().with("tab_close");
-                                            let close_response = ui.add(
-                                                egui::Button::new(
-                                                    RichText::new("×")
-                                                        .size(11.0)
-                                                        .color(ui.visuals().weak_text_color()),
-                                                )
-                                                .frame(false)
-                                                .min_size(egui::vec2(10.0, 10.0)),
-                                            );
-                                            let close_response = crate::screen_reader::label_element(
-                                                ui,
-                                                close_response,
-                                                &format!("Close {name}"),
-                                                &format!("Close tab for {name}"),
-                                            );
-                                            close_response.clicked()
-                                        }
+                                        // Reserve the trailing slot so the label never shifts
+                                        // when the dot, cross, and pin take turns in it.
+                                        ui.allocate_exact_size(
+                                            egui::vec2(TAB_TRAILING_W, TAB_STRIP_HEIGHT),
+                                            egui::Sense::hover(),
+                                        );
                                     })
                                     .inner;
+
+                                // The trailing affordance lives on the right edge, and is
+                                // interacted with *after* the tab so a click there wins over
+                                // tab activation the same way the close cross used to.
+                                let content_rect = tab.content_ui.min_rect();
+                                let afford_rect = egui::Rect::from_center_size(
+                                    egui::pos2(
+                                        content_rect.right() - TAB_TRAILING_W * 0.5,
+                                        content_rect.center().y,
+                                    ),
+                                    egui::vec2(TAB_TRAILING_W, TAB_TRAILING_W),
+                                );
 
                                 let response = tab
                                     .allocate_space(ui)
                                     .interact(egui::Sense::click())
                                     .on_hover_text(path.display().to_string());
-                                
                                 response.context_menu(|ui| {
                                     let is_pinned = self.pinned_tabs.contains(&path);
                                     if ui.button(if is_pinned { "Unpin tab" } else { "Pin tab" }).clicked() {
@@ -8015,7 +8133,6 @@ impl BlueIdeApp {
                                         ui.close_menu();
                                     }
                                 });
-
                                 response.widget_info(|| {
                                     egui::WidgetInfo::selected(
                                         egui::WidgetType::SelectableLabel,
@@ -8023,10 +8140,77 @@ impl BlueIdeApp {
                                         &title,
                                     )
                                 });
+
+                                let close_response = if is_pinned {
+                                    None
+                                } else {
+                                    let close_id = ui.id().with("tab_close").with(&path);
+                                    let hit =
+                                        ui.interact(afford_rect, close_id, egui::Sense::click());
+                                    Some(crate::screen_reader::label_element(
+                                        ui,
+                                        hit,
+                                        &format!("Close {name}"),
+                                        &format!("Close tab for {name}"),
+                                    ))
+                                };
+                                let close_clicked = close_response
+                                    .as_ref()
+                                    .is_some_and(|response| response.clicked());
+                                let close_hovered = close_response
+                                    .as_ref()
+                                    .is_some_and(|response| response.hovered());
+
                                 if !is_active && response.hovered() {
-                                    tab.frame.fill = ui.visuals().widgets.hovered.weak_bg_fill;
+                                    tab.frame.fill =
+                                        crate::chrome::hover_on(tab_surface, &palette);
                                 }
                                 tab.paint(ui);
+
+                                // Painted after the frame so the glyph sits on top of the
+                                // hover fill, and never reflows the label beside it.
+                                let affordance = afford_rect.center();
+                                if is_pinned {
+                                    crate::chrome::paint_pin(
+                                        ui.painter(),
+                                        affordance,
+                                        palette.muted_text,
+                                    );
+                                } else if response.hovered() || close_hovered {
+                                    if close_hovered {
+                                        ui.ctx()
+                                            .set_cursor_icon(egui::CursorIcon::PointingHand);
+                                    }
+                                    crate::chrome::paint_cross(
+                                        ui.painter(),
+                                        affordance,
+                                        7.0,
+                                        if close_hovered {
+                                            palette.primary_text
+                                        } else {
+                                            palette.muted_text
+                                        },
+                                    );
+                                } else if is_modified {
+                                    crate::chrome::paint_dirty_dot(
+                                        ui.painter(),
+                                        affordance,
+                                        palette.accent,
+                                    );
+                                }
+
+                                if let Some((previous_rect, previous_active)) = previous {
+                                    if !previous_active && !is_active {
+                                        crate::chrome::vrule(
+                                            ui.painter(),
+                                            previous_rect.right() + 0.5,
+                                            previous_rect.top() + 6.0,
+                                            previous_rect.bottom() - 6.0,
+                                            crate::chrome::divider_on(tab_surface, &palette),
+                                        );
+                                    }
+                                }
+                                previous = Some((response.rect, is_active));
 
                                 if response.clicked() && !close_clicked {
                                     activate = Some(path.clone());
@@ -8601,17 +8785,14 @@ impl BlueIdeApp {
                                             let segment = &state_segments[idx];
                                             let label_color = match &segment.kind {
                                                 crate::outline::SegmentKind::File => active_palette.semantic.primary_text,
-                                                crate::outline::SegmentKind::Symbol(sym_kind) => match sym_kind {
-                                                    crate::lsp::types::SymbolKind::Function => egui::Color32::from_rgb(30, 144, 255), // blue
-                                                    crate::lsp::types::SymbolKind::Struct
-                                                    | crate::lsp::types::SymbolKind::Enum
-                                                    | crate::lsp::types::SymbolKind::Trait => egui::Color32::from_rgb(0, 128, 128), // teal
-                                                    crate::lsp::types::SymbolKind::Impl => egui::Color32::from_rgb(235, 120, 30), // orange
-                                                    crate::lsp::types::SymbolKind::Module => egui::Color32::from_rgb(147, 112, 219), // purple
-                                                    _ => active_palette.semantic.primary_text,
+                                                // The symbol palette already knows how to
+                                                // color a kind; re-deriving it here is how
+                                                // the outline and the breadcrumbs drift apart.
+                                                crate::outline::SegmentKind::Symbol(sym_kind) => {
+                                                    sym_kind.icon_color(active_palette)
                                                 }
                                             };
-                                            
+
                                             let is_focused = state_focused_segment == Some(idx);
                                             let btn = egui::Button::new(RichText::new(&segment.label).color(label_color))
                                                 .frame(false);
@@ -8935,15 +9116,20 @@ impl BlueIdeApp {
 
                                 // ── Large file mode banner ────────────────────────
                                 if buffer.large_file_mode && !buffer.large_file_override {
+                                    let banner_surface = active_palette.semantic.panel_background;
                                     egui::Frame::none()
-                                        .fill(egui::Color32::from_rgb(80, 70, 0))
+                                        .fill(crate::chrome::alpha_over(
+                                            banner_surface,
+                                            active_palette.semantic.warning,
+                                            0.22,
+                                        ))
                                         .inner_margin(egui::Margin::symmetric(8.0, 4.0))
                                         .show(ui, |ui| {
                                             ui.horizontal(|ui| {
                                                 ui.label(
-                                                    egui::RichText::new("⚡ Large file mode — syntax highlighting and some features disabled")
-                                                        .color(egui::Color32::from_rgb(255, 220, 60))
-                                                        .size(12.0),
+                                                    egui::RichText::new("Large file mode — syntax highlighting and some features disabled")
+                                                        .color(active_palette.semantic.warning)
+                                                        .size(crate::chrome::UI_FONT),
                                                 );
                                                 if ui.small_button("Enable anyway").clicked() {
                                                     buffer.large_file_override = true;
@@ -9002,22 +9188,31 @@ impl BlueIdeApp {
                             ui.centered_and_justified(|ui| {
                                 ui.vertical_centered(|ui| {
                                     ui.add_space(ui.available_height() / 3.0);
+                                    let quiet = active_palette.semantic.muted_text;
                                     ui.label(
                                         egui::RichText::new("stack_ide")
                                             .size(32.0)
-                                            .color(egui::Color32::from_rgb(80, 80, 90)),
+                                            .color(crate::chrome::mix(
+                                                quiet,
+                                                active_palette.semantic.primary_text,
+                                                0.35,
+                                            )),
                                     );
                                     ui.add_space(12.0);
                                     ui.label(
                                         egui::RichText::new("Open a file from the sidebar or press Ctrl+P to quick open")
-                                            .size(13.0)
-                                            .color(egui::Color32::from_rgb(90, 90, 100)),
+                                            .size(crate::chrome::UI_FONT)
+                                            .color(quiet),
                                     );
                                     ui.add_space(8.0);
                                     ui.label(
                                         egui::RichText::new("Ctrl+P  Quick Open    Ctrl+O  Open File    Ctrl+N  New File")
-                                            .size(11.0)
-                                            .color(egui::Color32::from_rgb(70, 70, 80)),
+                                            .size(crate::chrome::UI_FONT_SMALL)
+                                            .color(crate::chrome::mix(
+                                                quiet,
+                                                active_palette.semantic.panel_background,
+                                                0.35,
+                                            )),
                                     );
                                 });
                             });
@@ -10789,6 +10984,8 @@ fn file_name(path: &Path) -> String {
 }
 
 const TAB_STRIP_HEIGHT: f32 = 26.0;
+/// Square reserved at each tab's right edge for the close cross / dirty dot / pin.
+const TAB_TRAILING_W: f32 = 16.0;
 const BREADCRUMB_BAR_HEIGHT: f32 = 26.0;
 const EDITOR_STACK_SPACING: f32 = 0.0;
 
@@ -10816,6 +11013,28 @@ fn tab_rounding(is_active: bool) -> egui::Rounding {
     } else {
         egui::Rounding::same(8.0)
     }
+}
+
+/// Width the command center needs before its shortcut chip can sit on the right edge
+/// without colliding with the centered label.
+fn group_hint_room(label_w: f32, chip_w: f32) -> f32 {
+    label_w + chip_w * 2.0 + 44.0
+}
+
+/// Elide the middle of a label, keeping both ends. File names are recognized by their
+/// stem *and* their extension, so chopping the tail off `transport_tests.rs` would hide
+/// exactly the part that distinguishes it.
+fn elide_middle(label: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = label.chars().collect();
+    if chars.len() <= max_chars || max_chars < 5 {
+        return label.to_owned();
+    }
+    let tail = (max_chars / 3).clamp(3, 10);
+    let head = max_chars - tail - 1;
+    let mut out: String = chars.iter().take(head).collect();
+    out.push('\u{2026}');
+    out.extend(chars.iter().rev().take(tail).rev());
+    out
 }
 
 fn truncate_tab_label(label: &str) -> String {
@@ -11558,6 +11777,18 @@ mod tests {
             "● 文件名非常长的源代码文件…"
         );
         assert_eq!(super::truncate_tab_label("main.rs"), "main.rs");
+    }
+
+    #[test]
+    fn middle_elision_keeps_the_extension_and_bails_on_short_budgets() {
+        assert_eq!(super::elide_middle("main.rs", 26), "main.rs");
+        let elided = super::elide_middle("transport_integration_tests.rs", 20);
+        assert_eq!(elided.chars().count(), 20);
+        assert!(elided.starts_with("transport"));
+        assert!(elided.ends_with("tests.rs"));
+        assert!(elided.contains('\u{2026}'));
+        // A budget too small to hold both ends leaves the label untouched.
+        assert_eq!(super::elide_middle("abcdefghijklmnop", 4), "abcdefghijklmnop");
     }
 
     #[test]

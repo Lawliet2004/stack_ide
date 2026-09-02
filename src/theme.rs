@@ -1,4 +1,4 @@
-use egui::{Color32, Stroke, Visuals};
+use egui::{Color32, Rounding, Stroke, Visuals};
 
 use crate::settings::Theme;
 
@@ -146,14 +146,28 @@ fn rgba(value: u32, alpha: u8) -> Color32 {
     Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha)
 }
 
+/// Builds egui's [`Visuals`] from a semantic palette.
+///
+/// The intent is a shell where surfaces are separated by *layer* rather than by
+/// outlines: widgets carry no frame at rest, interaction states are small translucent
+/// scrims derived from the surface underneath (see [`crate::chrome`]), and the only
+/// lines left in the UI are hairlines that quietly mark structure.
 fn visuals(scheme: ColorScheme, colors: SemanticPalette) -> Visuals {
     let mut visuals = match scheme {
         ColorScheme::Dark => Visuals::dark(),
         ColorScheme::Light => Visuals::light(),
     };
+
+    let chrome = crate::chrome::chrome_fill(&colors);
+    let divider = crate::chrome::divider(&colors);
+    let hovered_fill = crate::chrome::hover_on(chrome, &colors);
+    let pressed_fill = crate::chrome::active_on(chrome, &colors);
+
     visuals.dark_mode = scheme == ColorScheme::Dark;
     visuals.override_text_color = Some(colors.primary_text);
-    visuals.panel_fill = colors.panel_background;
+
+    // Three levels of one neutral ramp: document, chrome, elevation.
+    visuals.panel_fill = chrome;
     visuals.window_fill = colors.elevated_background;
     visuals.extreme_bg_color = colors.editor_background;
     visuals.faint_bg_color = colors.current_line;
@@ -161,24 +175,79 @@ fn visuals(scheme: ColorScheme, colors: SemanticPalette) -> Visuals {
     visuals.hyperlink_color = colors.accent;
     visuals.warn_fg_color = colors.warning;
     visuals.error_fg_color = colors.error;
+
+    // A 2px accent caret instead of egui's 2px pale bar.
+    visuals.text_cursor = Stroke::new(2.0, colors.accent);
+    visuals.text_cursor_preview = false;
+
+    // Selection is a tint, not a box. The stroke doubles as egui's focused-field
+    // outline (`TextEdit` paints `selection.stroke` while it has focus), so keeping it
+    // as a 1px accent hairline is what makes an input "pop" when clicked.
     visuals.selection.bg_fill = colors.selection;
-    visuals.selection.stroke = Stroke::new(1.0, colors.primary_text);
-    visuals.window_stroke = Stroke::new(1.0, colors.border);
-    visuals.widgets.noninteractive.bg_fill = colors.panel_background;
-    visuals.widgets.noninteractive.bg_stroke = Stroke::new(1.0, colors.border);
-    visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, colors.primary_text);
-    visuals.widgets.inactive.bg_fill = colors.elevated_background;
-    visuals.widgets.inactive.bg_stroke = Stroke::new(1.0, colors.border);
-    visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, colors.primary_text);
-    visuals.widgets.hovered.bg_fill = blend(colors.elevated_background, colors.accent, 0.22);
-    visuals.widgets.hovered.bg_stroke = Stroke::NONE;
-    visuals.widgets.hovered.fg_stroke = Stroke::new(1.5, colors.primary_text);
-    visuals.widgets.active.bg_fill = blend(colors.elevated_background, colors.accent, 0.38);
-    visuals.widgets.active.bg_stroke = Stroke::NONE;
-    visuals.widgets.active.fg_stroke = Stroke::new(1.5, colors.primary_text);
-    visuals.widgets.open.bg_fill = blend(colors.elevated_background, colors.accent, 0.28);
-    visuals.widgets.open.bg_stroke = Stroke::NONE;
-    visuals.widgets.open.fg_stroke = Stroke::new(1.0, colors.primary_text);
+    visuals.selection.stroke = Stroke::new(1.0, colors.accent);
+
+    // Floating containers get a hairline and a soft shadow rather than a heavy frame.
+    visuals.window_rounding = Rounding::same(crate::chrome::RADIUS_PANEL);
+    visuals.menu_rounding = Rounding::same(crate::chrome::RADIUS_PANEL);
+    visuals.window_stroke = Stroke::new(1.0, divider);
+    visuals.window_shadow = egui::epaint::Shadow {
+        offset: egui::vec2(0.0, 2.0),
+        blur: 12.0,
+        spread: 0.0,
+        color: Color32::from_black_alpha(70),
+    };
+    visuals.popup_shadow = egui::epaint::Shadow {
+        offset: egui::vec2(0.0, 4.0),
+        blur: 16.0,
+        spread: 0.0,
+        color: Color32::from_black_alpha(84),
+    };
+
+    let widgets = &mut visuals.widgets;
+
+    // Labels, separators, and panel rules: the divider is the only stroke the shell
+    // draws routinely, and it is tuned to sit just above the panel it is painted on.
+    widgets.noninteractive.bg_fill = chrome;
+    widgets.noninteractive.weak_bg_fill = chrome;
+    widgets.noninteractive.bg_stroke = Stroke::new(1.0, divider);
+    widgets.noninteractive.fg_stroke = Stroke::new(1.0, colors.primary_text);
+
+    // Buttons, tabs, and rows are flat until you point at them. Fields stay legible
+    // without a border because their fill is the document step, one level below the
+    // panel they sit on.
+    widgets.inactive.bg_fill = Color32::TRANSPARENT;
+    widgets.inactive.weak_bg_fill = Color32::TRANSPARENT;
+    widgets.inactive.bg_stroke = Stroke::NONE;
+    widgets.inactive.fg_stroke = Stroke::new(1.0, colors.muted_text);
+
+    for (state, fill) in [
+        (&mut widgets.hovered, hovered_fill),
+        (&mut widgets.active, pressed_fill),
+        (&mut widgets.open, pressed_fill),
+    ] {
+        state.bg_fill = fill;
+        state.weak_bg_fill = fill;
+        state.bg_stroke = Stroke::NONE;
+        state.fg_stroke = Stroke::new(1.0, colors.primary_text);
+    }
+
+    // One corner radius for controls, and no overhanging hover frames: `expansion`
+    // would let egui draw a highlight box larger than the widget it belongs to.
+    for widget in [
+        &mut widgets.noninteractive,
+        &mut widgets.inactive,
+        &mut widgets.hovered,
+        &mut widgets.active,
+        &mut widgets.open,
+    ] {
+        widget.rounding = Rounding::same(crate::chrome::RADIUS_WIDGET);
+        widget.expansion = 0.0;
+    }
+
+    visuals.striped = false;
+    visuals.collapsing_header_frame = false;
+    visuals.indent_has_left_vline = true;
+    visuals.slider_trailing_fill = false;
     visuals
 }
 
@@ -191,100 +260,135 @@ fn palette(semantic: SemanticPalette, syntax: SyntaxPalette) -> ThemePalette {
     ThemePalette { semantic, syntax }
 }
 
+/// Zed's dark shell: one warm-neutral ramp ("sand") for every surface, plus a single
+/// blue for accent, focus, and links. Surfaces differ by *step*, not by hue, which is
+/// what keeps the dock, tab bar, and editor legible as separate layers without the
+/// borders a VS Code-style theme needs.
 pub fn blue_dark() -> ThemePalette {
+    let document = rgb(0x111110); // step 1 - editor, text fields
+    let chrome = rgb(0x191918); // step 2 - dock, tab bar, status bar, title bar
+    let elevated = rgb(0x222221); // step 3 - popups, current line, insets
+    let raised = rgb(0x2a2a28); // step 4 - selected-but-unfocused
+    let matched = rgb(0x31312e); // step 5 - find matches
+    let rule = rgb(0x3b3a37); // step 6 - the only border color
+    let placeholder = rgb(0x7c7b74); // step 10 - line numbers, dim labels
+    let muted = rgb(0xb5b3ad); // step 11 - secondary text, icons
+    let text = rgb(0xeeeeec); // step 12 - primary text
+    let accent = rgb(0x70b8ff); // blue step 11
+
     palette(
         SemanticPalette {
-            ui_background: rgb(0x181a1f),
-            panel_background: rgb(0x20242b),
-            elevated_background: rgb(0x292e38),
-            editor_background: rgb(0x15181d),
-            primary_text: rgb(0xd4d4d4),
-            muted_text: rgb(0x9aa3ad),
-            selection: rgb(0x264f78),
-            inactive_selection: rgb(0x343a46),
-            accent: rgb(0x4daafc),
-            border: rgb(0x3b424d),
-            error: rgb(0xff6b6b),
-            warning: rgb(0xe5c07b),
-            information: rgb(0x61afef),
-            success: rgb(0x7ec699),
-            search_match: rgba(0x50a0ff, 70),
-            active_search_match: rgba(0xffa000, 125),
-            current_line: rgb(0x20252d),
-            completion_function: rgb(0xdcb4ff),
-            completion_type: rgb(0x78c8ff),
-            completion_field: rgb(0xb4dcb4),
-            completion_variable: rgb(0x96c8ff),
-            completion_module: rgb(0xffc878),
-            completion_keyword: rgb(0x78a0ff),
-            inlay_type_hint_text: rgb(0x7ec699),
-            inlay_type_hint_background: rgba(0x7ec699, 28),
-            inlay_parameter_hint_text: rgb(0x9aa3ad),
-            inlay_parameter_hint_background: rgba(0x4daafc, 22),
-            inlay_hint_border: rgba(0x3b424d, 180),
-            hover_code_background: rgb(0x1a1d23),
-            hover_link: rgb(0x4daafc),
+            ui_background: elevated,
+            panel_background: chrome,
+            elevated_background: elevated,
+            editor_background: document,
+            primary_text: text,
+            muted_text: muted,
+            selection: blend(document, accent, 0.30),
+            inactive_selection: raised,
+            accent,
+            border: rule,
+            error: rgb(0xff9592),
+            warning: rgb(0xf5e147),
+            information: accent,
+            success: rgb(0x3dd68c),
+            search_match: matched,
+            active_search_match: rgba(0xf5e147, 110),
+            current_line: elevated,
+            completion_function: rgb(0x8cc4ff),
+            completion_type: rgb(0x5cc8c0),
+            completion_field: rgb(0x9fce9f),
+            completion_variable: muted,
+            completion_module: rgb(0xe6c07b),
+            completion_keyword: rgb(0xc193e8),
+            // Inlay hint semantic colors
+            inlay_type_hint_text: placeholder,
+            inlay_type_hint_background: rgba(0x2a2a28, 190),
+            inlay_parameter_hint_text: placeholder,
+            inlay_parameter_hint_background: rgba(0x2a2a28, 150),
+            inlay_hint_border: rgba(0x3b3a37, 120),
+            // Hover popup semantic colors
+            hover_code_background: document,
+            hover_link: accent,
         },
         SyntaxPalette {
-            default: rgb(0xd4d4d4),
-            comment: rgb(0x6a9955),
-            string: rgb(0xce9178),
-            number: rgb(0xb5cea8),
-            keyword: rgb(0x569cd6),
-            type_name: rgb(0x4ec9b0),
-            macro_name: rgb(0xdcdcaa),
-            lifetime: rgb(0x4fc1ff),
-            function: rgb(0xdcdcaa),
-            symbol: rgb(0xd4d4d4),
+            default: text,
+            comment: placeholder,
+            string: rgb(0x9fce9f),
+            number: rgb(0xd9a373),
+            keyword: rgb(0xc193e8),
+            type_name: rgb(0x5cc8c0),
+            macro_name: rgb(0xe6c07b),
+            lifetime: rgb(0x8cc4ff),
+            function: rgb(0x8cc4ff),
+            symbol: muted,
         },
     )
 }
 
+/// The light sibling of [`blue_dark`]: the same ramp read in the opposite direction,
+/// where a *whiter* surface means "closer to the reader". Popups and text fields take
+/// the brightest step and the dock steps down from them, so elevation still reads as
+/// elevation without shadows doing all the work.
 fn blue_light() -> ThemePalette {
+    let document = rgb(0xfdfdfc); // step 1 - editor, text fields, popups
+    let chrome = rgb(0xf9f9f8); // step 2 - dock, tab bar, status bar
+    let elevated = rgb(0xf1f0ef); // step 3 - insets, current line
+    let raised = rgb(0xe9e8e6); // step 4 - selected-but-unfocused
+    let matched = rgb(0xe2e1de); // step 5 - find matches
+    let rule = rgb(0xdad9d6); // step 6 - borders and separators
+    let dim = rgb(0x8d8d86); // step 9 - line numbers, dim labels
+    let placeholder = rgb(0x82827c); // step 10 - muted glyphs
+    let muted = rgb(0x63635e); // step 11 - secondary text
+    let text = rgb(0x21201c); // step 12 - primary text
+    let accent = rgb(0x0d74ce); // blue step 11
+
     palette(
         SemanticPalette {
-            ui_background: rgb(0xf3f6fa),
-            panel_background: rgb(0xe8edf3),
-            elevated_background: rgb(0xffffff),
-            editor_background: rgb(0xfafcff),
-            primary_text: rgb(0x202733),
-            muted_text: rgb(0x667085),
-            selection: rgb(0xadd6ff),
-            inactive_selection: rgb(0xd8e6f3),
-            accent: rgb(0x0969da),
-            border: rgb(0xc5ced8),
-            error: rgb(0xb42318),
-            warning: rgb(0x8a5b00),
-            information: rgb(0x0969da),
-            success: rgb(0x18794e),
-            search_match: rgba(0x2f81f7, 55),
-            active_search_match: rgba(0xe3a008, 105),
-            current_line: rgb(0xedf4fb),
-            completion_function: rgb(0x7a3e9d),
-            completion_type: rgb(0x005a9c),
-            completion_field: rgb(0x27703f),
-            completion_variable: rgb(0x075985),
-            completion_module: rgb(0x9a4d00),
-            completion_keyword: rgb(0x174ea6),
-            inlay_type_hint_text: rgb(0x18794e),
-            inlay_type_hint_background: rgba(0x18794e, 22),
-            inlay_parameter_hint_text: rgb(0x667085),
-            inlay_parameter_hint_background: rgba(0x0969da, 18),
-            inlay_hint_border: rgba(0xc5ced8, 200),
-            hover_code_background: rgb(0xf0f4f8),
-            hover_link: rgb(0x0969da),
+            ui_background: elevated,
+            panel_background: chrome,
+            elevated_background: document,
+            editor_background: document,
+            primary_text: text,
+            muted_text: muted,
+            selection: blend(document, accent, 0.22),
+            inactive_selection: raised,
+            accent,
+            border: rule,
+            error: rgb(0xce2c31),
+            warning: rgb(0x9e6c00),
+            information: accent,
+            success: rgb(0x218358),
+            search_match: rgb(0xd5d3c8),
+            active_search_match: rgba(0xffdc00, 130),
+            current_line: elevated,
+            completion_function: rgb(0x0b62c4),
+            completion_type: rgb(0x0d6b7a),
+            completion_field: rgb(0x0a6b3d),
+            completion_variable: rgb(0x4a4a45),
+            completion_module: rgb(0x8a4a00),
+            completion_keyword: rgb(0x9a3f9e),
+            // Inlay hint semantic colors
+            inlay_type_hint_text: dim,
+            inlay_type_hint_background: rgba(0xe9e8e6, 200),
+            inlay_parameter_hint_text: dim,
+            inlay_parameter_hint_background: rgba(0xe9e8e6, 160),
+            inlay_hint_border: rgba(0xdad9d6, 160),
+            // Hover popup semantic colors
+            hover_code_background: elevated,
+            hover_link: accent,
         },
         SyntaxPalette {
-            default: rgb(0x24292f),
-            comment: rgb(0x5c6370),
-            string: rgb(0xa31515),
-            number: rgb(0x098658),
-            keyword: rgb(0x0000ff),
-            type_name: rgb(0x267f99),
-            macro_name: rgb(0x795e26),
-            lifetime: rgb(0x006880),
-            function: rgb(0x795e26),
-            symbol: rgb(0x24292f),
+            default: text,
+            comment: dim,
+            string: rgb(0x0a6b3d),
+            number: rgb(0x8a4a00),
+            keyword: rgb(0x9a3f9e),
+            type_name: rgb(0x0d6b7a),
+            macro_name: rgb(0x7a5c00),
+            lifetime: rgb(0x0b62c4),
+            function: rgb(0x0b62c4),
+            symbol: rgb(0x4a4a45),
         },
     )
 }
@@ -292,7 +396,7 @@ fn blue_light() -> ThemePalette {
 fn nord() -> ThemePalette {
     palette(
         SemanticPalette {
-            ui_background: rgb(0x2e3440),
+            ui_background: rgb(0x434c5e),
             panel_background: rgb(0x3b4252),
             elevated_background: rgb(0x434c5e),
             editor_background: rgb(0x2e3440),
@@ -301,7 +405,7 @@ fn nord() -> ThemePalette {
             selection: rgb(0x4c566a),
             inactive_selection: rgb(0x3b4252),
             accent: rgb(0x88c0d0),
-            border: rgb(0x4c566a),
+            border: blend(rgb(0x3b4252), rgb(0x4c566a), 0.55),
             error: rgb(0xbf616a),
             warning: rgb(0xebcb8b),
             information: rgb(0x81a1c1),
@@ -341,7 +445,7 @@ fn nord() -> ThemePalette {
 fn dracula() -> ThemePalette {
     palette(
         SemanticPalette {
-            ui_background: rgb(0x282a36),
+            ui_background: rgb(0x343746),
             panel_background: rgb(0x21222c),
             elevated_background: rgb(0x343746),
             editor_background: rgb(0x282a36),
@@ -350,7 +454,7 @@ fn dracula() -> ThemePalette {
             selection: rgb(0x44475a),
             inactive_selection: rgb(0x383a4a),
             accent: rgb(0xbd93f9),
-            border: rgb(0x44475a),
+            border: blend(rgb(0x21222c), rgb(0x44475a), 0.6),
             error: rgb(0xff5555),
             warning: rgb(0xf1fa8c),
             information: rgb(0x8be9fd),
@@ -390,7 +494,7 @@ fn dracula() -> ThemePalette {
 fn solarized_dark() -> ThemePalette {
     palette(
         SemanticPalette {
-            ui_background: rgb(0x002b36),
+            ui_background: rgb(0x0b3b46),
             panel_background: rgb(0x073642),
             elevated_background: rgb(0x0b3b46),
             editor_background: rgb(0x002b36),
@@ -399,7 +503,7 @@ fn solarized_dark() -> ThemePalette {
             selection: rgb(0x07586b),
             inactive_selection: rgb(0x073642),
             accent: rgb(0x268bd2),
-            border: rgb(0x586e75),
+            border: blend(rgb(0x073642), rgb(0x586e75), 0.5),
             error: rgb(0xdc322f),
             warning: rgb(0xb58900),
             information: rgb(0x268bd2),
