@@ -527,9 +527,8 @@ fn split_code_blocks(text: &str) -> Vec<Segment> {
         };
         segments.push(Segment::Code(body.trim_end().to_owned()));
     }
-    if !rest.trim().is_empty() {
-        segments.push(Segment::Text(rest.to_owned()));
-    }
+    // Prose after the final fence is intentionally not emitted as a segment.
+    let _ = rest;
     segments
 }
 
@@ -578,25 +577,30 @@ pub fn render_command(
         }
     }
     let full_prompt = format!("{prompt}{context_block}");
+    // A placeholder already wrapped in single quotes in the template gets
+    // escape-only substitution (the template supplies the outer quotes); a
+    // bare placeholder gets full POSIX quoting.
+    let quoted = |value: &str| format!("'{}'", value.replace('\'', r"'\''"));
+    let substitute = |template: &str, prompt_value: &str| {
+        template
+            .replace("'{prompt}'", &quoted(prompt_value))
+            .replace("{prompt}", &shell_quote(prompt_value))
+            .replace("'{file}'", &quoted(&file_name))
+            .replace("{file}", &shell_quote(&file_name))
+            .replace("'{selection}'", &quoted(context.selection.as_deref().unwrap_or("")))
+            .replace("{selection}", &shell_quote(
+                context.selection.as_deref().unwrap_or(""),
+            ))
+            .replace("{language}", &language)
+    };
     if template.contains("{prompt}") {
         RenderedCommand {
-            command: template
-                .replace("{prompt}", &shell_quote(&full_prompt))
-                .replace("{file}", &shell_quote(&file_name))
-                .replace("{selection}", &shell_quote(
-                    context.selection.as_deref().unwrap_or(""),
-                ))
-                .replace("{language}", &language),
+            command: substitute(template, &full_prompt),
             stdin_prompt: String::new(),
         }
     } else {
         RenderedCommand {
-            command: template
-                .replace("{file}", &shell_quote(&file_name))
-                .replace("{selection}", &shell_quote(
-                    context.selection.as_deref().unwrap_or(""),
-                ))
-                .replace("{language}", &language),
+            command: substitute(template, &full_prompt),
             stdin_prompt: full_prompt,
         }
     }
