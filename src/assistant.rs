@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, TryRecvError};
-use egui::{Color32, RichText, ScrollArea, TextEdit};
+use egui::{RichText, ScrollArea, TextEdit};
 
 use crate::theme::SemanticPalette;
 

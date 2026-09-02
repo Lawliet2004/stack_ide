@@ -409,36 +409,6 @@ mod tests {
     }
 
     #[test]
-    fn diag_buffer_path_vs_direct_highlight() {
-        let font_id = FontId::monospace(14.0);
-        let pal = crate::theme::default_syntax_palette();
-        let mut direct = Highlighter::new();
-        let d1 = distinct(&direct.highlight("fn let if else", font_id.clone(), pal));
-        let mut b = crate::editor::buffer::TextBuffer::from_text("fn let if else");
-        let d2 = distinct(&b.get_layout(font_id.clone()));
-        let mut b2 = crate::editor::buffer::TextBuffer::from_text("// hello");
-        let d3 = distinct(&b2.get_layout(font_id));
-        panic!(
-            "diag: palette default={:?} keyword={:?} | direct={:?} | buffer_keywords={:?} | buffer_comment={:?}",
-            pal.default, pal.keyword, d1, d2, d3
-        );
-    }
-
-    fn distinct(job: &egui::text::LayoutJob) -> Vec<String> {
-        let mut colors: Vec<u32> = job
-            .sections
-            .iter()
-            .map(|s| {
-                let c = s.format.color;
-                ((c.r() as u32) << 16) | ((c.g() as u32) << 8) | c.b() as u32
-            })
-            .collect();
-        colors.sort_unstable();
-        colors.dedup();
-        colors.iter().map(|c| format!("{c:#06x}")).collect()
-    }
-
-    #[test]
     fn keyword_is_colored_blue() {
         let mut highlighter = Highlighter::new();
         let font_id = FontId::monospace(14.0);

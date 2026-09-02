@@ -840,15 +840,15 @@ fn test_highlight_keywords() {
     let font_id = FontId::monospace(14.0);
     let layout = buffer.get_layout(font_id);
 
-    // Keywords should be blue (0x569CD6)
-    let keyword_color = egui::Color32::from_rgb(0x56, 0x9C, 0xD6);
+    // Keywords should use the active theme's keyword color.
+    let keyword_color = blue_ide::theme::default_syntax_palette().keyword;
     let has_keyword = layout
         .sections
         .iter()
         .any(|s| s.format.color == keyword_color);
     assert!(
         has_keyword,
-        "Should highlight keywords in blue; expected {:?}, found colors {:?}",
+        "Should highlight keywords with the theme keyword color; expected {:?}, found colors {:?}",
         keyword_color,
         distinct_colors(&layout)
     );
@@ -861,15 +861,15 @@ fn test_highlight_strings() {
     let font_id = FontId::monospace(14.0);
     let layout = buffer.get_layout(font_id);
 
-    // Strings should be orange (0xCE9178)
-    let string_color = egui::Color32::from_rgb(0xCE, 0x91, 0x78);
+    // Strings should use the active theme's string color.
+    let string_color = blue_ide::theme::default_syntax_palette().string;
     let has_string = layout
         .sections
         .iter()
         .any(|s| s.format.color == string_color);
     assert!(
         has_string,
-        "Should highlight strings in orange; expected {:?}, found colors {:?}",
+        "Should highlight strings with the theme string color; expected {:?}, found colors {:?}",
         string_color,
         distinct_colors(&layout)
     );
@@ -882,15 +882,15 @@ fn test_highlight_comments() {
     let font_id = FontId::monospace(14.0);
     let layout = buffer.get_layout(font_id);
 
-    // Comments should be green (0x6A9955)
-    let comment_color = egui::Color32::from_rgb(0x6A, 0x99, 0x55);
+    // Comments should use the active theme's comment color.
+    let comment_color = blue_ide::theme::default_syntax_palette().comment;
     let has_comment = layout
         .sections
         .iter()
         .any(|s| s.format.color == comment_color);
     assert!(
         has_comment,
-        "Should highlight comments in green; expected {:?}, found colors {:?}",
+        "Should highlight comments with the theme comment color; expected {:?}, found colors {:?}",
         comment_color,
         distinct_colors(&layout)
     );
@@ -903,15 +903,15 @@ fn test_highlight_numbers() {
     let font_id = FontId::monospace(14.0);
     let layout = buffer.get_layout(font_id);
 
-    // Numbers should be light green (0xB5CEA8)
-    let number_color = egui::Color32::from_rgb(0xB5, 0xCE, 0xA8);
+    // Numbers should use the active theme's number color.
+    let number_color = blue_ide::theme::default_syntax_palette().number;
     let has_number = layout
         .sections
         .iter()
         .any(|s| s.format.color == number_color);
     assert!(
         has_number,
-        "Should highlight numbers in light green; expected {:?}, found colors {:?}",
+        "Should highlight numbers with the theme number color; expected {:?}, found colors {:?}",
         number_color,
         distinct_colors(&layout)
     );
