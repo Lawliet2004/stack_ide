@@ -388,8 +388,8 @@ impl Default for EditorSettings {
             insert_spaces: default_insert_spaces(),
             format_on_save: false,
             inlay_hints: InlayHintSettings::default(),
-            auto_save: false,
-            auto_save_delay_ms: 1000,
+            auto_save: AutoSaveMode::Off,
+            auto_save_delay_ms: default_auto_save_delay_ms(),
             inline_diagnostics: true,
             vim_mode: false,
             show_indent_guides: true,
@@ -708,6 +708,19 @@ impl Settings {
             if arg.contains('\0') {
                 errors.push(format!("lsp.typescript.args[{}] contains NUL character", i));
             }
+        }
+
+        if self.assistant.command.contains('\0') {
+            errors.push("assistant.command contains NUL character".to_owned());
+        }
+
+        if self.editor.auto_save == AutoSaveMode::AfterDelay
+            && !(50..=3_600_000).contains(&self.editor.auto_save_delay_ms)
+        {
+            errors.push(format!(
+                "editor.auto_save_delay_ms must be between 50 and 3600000 when auto_save is after_delay; found {}",
+                self.editor.auto_save_delay_ms
+            ));
         }
 
         if errors.is_empty() {
