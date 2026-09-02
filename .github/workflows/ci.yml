@@ -19,32 +19,31 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo check (lib + tests)
         run: |
-          cargo check --lib --tests > /tmp/check.log 2>&1 || true
-          tail -20 /tmp/check.log
-          grep -E "^error(\[E[0-9]+\])?:|^error: " /tmp/check.log | head -25 | while IFS= read -r line; do
-            echo "::error title=check::$line"
-          done
-          if grep -qE "^error(\[E[0-9]+\])?:|^error: " /tmp/check.log; then exit 1; fi
+          set -o pipefail
+          cargo check --lib --tests 2>&1 | tee /tmp/check.log
       - name: cargo test (library suite)
         run: |
-          cargo test --lib > /tmp/lib.log 2>&1 || true
-          tail -30 /tmp/lib.log
-          if grep -q "test result: FAILED" /tmp/lib.log; then
-            grep -E "^test .* FAILED" /tmp/lib.log | head -30 | while IFS= read -r line; do
-              echo "::error title=failing lib test::$line"
-            done
-            exit 1
-          fi
+          set -o pipefail
+          cargo test --lib 2>&1 | tee /tmp/lib.log
       - name: cargo test (integration guards)
         run: |
-          cargo test --test integration_test > /tmp/it.log 2>&1 || true
-          tail -30 /tmp/it.log
-          if grep -q "test result: FAILED" /tmp/it.log; then
-            grep -E "^test .* FAILED" /tmp/it.log | head -30 | while IFS= read -r line; do
-              echo "::error title=failing integration test::$line"
-            done
-            exit 1
-          fi
+          set -o pipefail
+          cargo test --test integration_test 2>&1 | tee /tmp/it.log
+      - name: surface failure names as annotations
+        if: failure()
+        run: |
+          for log in /tmp/check.log /tmp/lib.log /tmp/it.log; do
+            [ -f "$log" ] || continue
+            grep -E "^test .* FAILED|^error(\[E[0-9]+\])?:|^error: " "$log" | head -25 |
+              while IFS= read -r line; do
+                echo "::error title=ci::$line"
+              done
+            grep -E "^failures:$" -A 20 "$log" | head -25 |
+              while IFS= read -r line; do
+                echo "::error title=ci-failures::$line"
+              done
+          done
+          exit 0
       - name: cargo clippy
         run: cargo clippy --lib -- -D warnings
         continue-on-error: true

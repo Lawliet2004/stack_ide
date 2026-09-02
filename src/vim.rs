@@ -1648,7 +1648,8 @@ impl VimState {
         if self.register.is_empty() {
             return;
         }
-        let repetitions = count.max(1);
+        // Cap the repeat so a fat-fingered `99999p` cannot exhaust memory.
+        let repetitions = count.max(1).min(4_096);
         let mut payload = self.register.repeat(repetitions);
         let linewise = self.register_linewise;
         if linewise && !payload.ends_with('\n') {
