@@ -92,8 +92,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use egui::{
-    pos2, vec2, Align, Color32, Event, FontId, Key, Modifiers, Rect, Response, ScrollArea, Sense,
-    Stroke, Ui, WidgetInfo, WidgetType,
+    pos2, vec2, Align, Align2, Color32, Event, FontId, Key, Modifiers, Rect, Response, ScrollArea,
+    Sense, Stroke, Ui, WidgetInfo, WidgetType,
 };
 
 use super::buffer::{CursorPosition, TextBuffer};
@@ -248,6 +248,10 @@ pub struct EditorPresentation {
     pub indent_guide_color: Color32,
     pub indent_guide_active_color: Color32,
     pub multi_cursor_modifier: MultiCursorModifier,
+    /// Vim/modal editing enabled (`editor.vim_mode`).
+    pub vim_enabled: bool,
+    /// Render diagnostic messages inline at end of line (Zed-style).
+    pub inline_diagnostics: bool,
 }
 
 impl EditorPresentation {
@@ -265,6 +269,8 @@ impl EditorPresentation {
             indent_guide_color: Color32::from_rgb(42, 42, 42),
             indent_guide_active_color: Color32::from_rgb(64, 64, 64),
             multi_cursor_modifier: MultiCursorModifier::Alt,
+            vim_enabled: false,
+            inline_diagnostics: true,
         }
     }
 
@@ -286,6 +292,8 @@ impl EditorPresentation {
                 "command" | "cmd" | "meta" => MultiCursorModifier::Command,
                 _ => MultiCursorModifier::Alt,
             };
+        self.vim_enabled = settings.vim_mode;
+        self.inline_diagnostics = settings.inline_diagnostics;
         self
     }
 
@@ -406,7 +414,7 @@ pub enum DefinitionTrigger {
     CtrlClick,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorAction {
     GoToDefinition {
         position: CursorPosition,
@@ -422,6 +430,10 @@ pub enum EditorAction {
     },
     NextBookmark,
     PrevBookmark,
+    /// A vim `:` command that needs the app shell (`:w`, `:q`, `:wq`, `:noh`).
+    VimEx(crate::vim::ExCommand),
+    /// A vim `/` pattern was accepted; mirror it into the search panel.
+    VimSearch(String),
 }
 
 /// Per-frame editor widget results consumed by the app shell.
@@ -529,6 +541,8 @@ impl EditorWidget {
             indent_guide_color,
             indent_guide_active_color,
             multi_cursor_modifier,
+            vim_enabled,
+            inline_diagnostics,
         } = presentation;
         buffer.set_bracket_features(bracket_colorization, bracket_matching);
         if state.last_path.as_deref() != buffer.path() {
@@ -898,6 +912,7 @@ impl EditorWidget {
                                 tab_width,
                                 insert_spaces,
                                 lsp_active,
+                                vim_enabled && !buffer.large_file_mode,
                             ) {
                                 if editor_action.is_none() {
                                     editor_action = Some(action);
@@ -1455,6 +1470,48 @@ impl EditorWidget {
                                 }
                             }
 
+                            // Zed-style inline diagnostic message at end of line.
+                            if inline_diagnostics {
+                                let on_line = diagnostics.iter().find(|diagnostic| {
+                                    lsp_utf16_range_char_span_on_line(
+                                        line_index,
+                                        &line,
+                                        diagnostic.line_start,
+                                        diagnostic.col_start,
+                                        diagnostic.line_end,
+                                        diagnostic.col_end,
+                                    )
+                                    .is_some()
+                                });
+                                if let Some(first) = on_line {
+                                    let message = first.message.lines().next().unwrap_or("").trim();
+                                    if !message.is_empty() {
+                                        const MAX_INLINE_MESSAGE_CHARS: usize = 120;
+                                        let text: String = if message.chars().count()
+                                            > MAX_INLINE_MESSAGE_CHARS
+                                        {
+                                            message
+                                                .chars()
+                                                .take(MAX_INLINE_MESSAGE_CHARS)
+                                                .collect()
+                                        } else {
+                                            message.to_owned()
+                                        };
+                                        let line_right = text_left + galley.size().x;
+                                        painter.text(
+                                            pos2(
+                                                line_right + 24.0,
+                                                y + shift + row_height * 0.5,
+                                            ),
+                                            Align2::LEFT_CENTER,
+                                            format!("● {text}"),
+                                            FontId::monospace(font_size * 0.85),
+                                            diagnostic_color(first.severity, palette.semantic),
+                                        );
+                                    }
+                                }
+                            }
+
                             for (index, cursor) in buffer.cursors.iter().enumerate() {
                                 if cursor.head.line == line_index {
                                     let local = galley.pos_from_ccursor(egui::text::CCursor {
@@ -1496,6 +1553,15 @@ impl EditorWidget {
                             let show_cursor =
                                 ((ui.input(|input| input.time) * 2.0) as u64).is_multiple_of(2);
                             if show_cursor {
+                                // Vim normal/visual modes use a block cursor
+                                // (Zed's vim mode look); insert keeps the bar.
+                                let vim_block = vim_enabled
+                                    && matches!(
+                                        buffer.vim.mode,
+                                        crate::vim::VimMode::Normal
+                                            | crate::vim::VimMode::Visual
+                                            | crate::vim::VimMode::VisualLine
+                                    );
                                 for (rect, primary) in &caret_rects {
                                     let color = if *primary {
                                         cursor_color
@@ -1507,10 +1573,24 @@ impl EditorWidget {
                                             180,
                                         )
                                     };
-                                    painter.line_segment(
-                                        [rect.left_top(), rect.left_bottom()],
-                                        Stroke::new(if *primary { 1.5 } else { 1.0 }, color),
-                                    );
+                                    if vim_block {
+                                        let width = if rect.width() > 0.5 {
+                                            rect.width().max(4.0)
+                                        } else {
+                                            // End-of-line: half-width block.
+                                            row_height * 0.45
+                                        };
+                                        let block = Rect::from_min_size(
+                                            rect.min,
+                                            vec2(width, row_height),
+                                        );
+                                        painter.rect_filled(block, 1.0, color);
+                                    } else {
+                                        painter.line_segment(
+                                            [rect.left_top(), rect.left_bottom()],
+                                            Stroke::new(if *primary { 1.5 } else { 1.0 }, color),
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -1709,6 +1789,30 @@ impl EditorWidget {
                 rect.size(),
             ));
         }
+
+        // ── Vim command line (`:` / `/`) overlay ────────────────────────────
+        if vim_enabled
+            && matches!(
+                buffer.vim.mode,
+                crate::vim::VimMode::Command | crate::vim::VimMode::Search
+            )
+        {
+            let inner = scroll_output.inner_rect;
+            let cmdline_rect = Rect::from_min_size(
+                pos2(inner.left() + 8.0, inner.bottom() - 28.0),
+                vec2(inner.width().min(480.0).max(120.0), 24.0),
+            );
+            let painter = ui.painter();
+            painter.rect_filled(cmdline_rect, 3.0, palette.semantic.elevated_background);
+            painter.rect_stroke(cmdline_rect, 3.0, Stroke::new(1.0, palette.semantic.border));
+            painter.text(
+                cmdline_rect.left_top() + vec2(8.0, 12.0),
+                egui::Align2::LEFT_CENTER,
+                buffer.vim.cmdline(),
+                FontId::monospace(presentation_font_size_snapshot(&font_id)),
+                palette.semantic.primary_text,
+            );
+        }
         if let Some(hover) = candidate_hovered_source.as_mut() {
             hover.token_rect = Rect::from_min_size(
                 editor_origin + hover.token_rect.min.to_vec2() - scroll_offset,
@@ -1860,13 +1964,45 @@ fn handle_keyboard_input(
     tab_width: usize,
     insert_spaces: bool,
     lsp_active: bool,
+    vim_enabled: bool,
 ) -> Option<EditorAction> {
     let mut action = None;
+    let vim_options = crate::vim::VimOptions {
+        tab_width,
+        insert_spaces,
+    };
+    // Feeds one input into the per-buffer vim state machine and stores it back.
+    fn feed_vim(
+        buffer: &mut TextBuffer,
+        input: crate::vim::VimInput,
+        options: crate::vim::VimOptions,
+    ) -> crate::vim::VimResult {
+        let mut vim = std::mem::take(&mut buffer.vim);
+        let result = vim.process(buffer, input, options);
+        buffer.vim = vim;
+        result
+    }
     let events = ui.input(|input| input.events.clone());
     for event in events {
         match event {
             Event::Text(text) if !text.is_empty() => {
                 if ui.input(|input| input.modifiers.command || input.modifiers.alt) {
+                    continue;
+                }
+                if vim_enabled {
+                    // Vim owns Text events entirely: insert mode inserts via
+                    // the state machine; other modes consume or no-op.
+                    for ch in text.chars() {
+                        let result = feed_vim(buffer, crate::vim::VimInput::Char(ch), vim_options);
+                        if result.consumed && action.is_none() {
+                            if let Some(ex) = result.ex {
+                                action = Some(EditorAction::VimEx(ex));
+                            } else if let Some(pattern) = result.search {
+                                action = Some(EditorAction::VimSearch(pattern));
+                            }
+                        }
+                    }
+                    state.scroll_to_cursor = true;
                     continue;
                 }
                 let _ = buffer.insert_at_cursors(&text);
@@ -1887,6 +2023,51 @@ fn handle_keyboard_input(
                 modifiers,
                 ..
             } => {
+                // ── Vim interception (before every other binding) ────────────
+                if vim_enabled && !completion_popup_open {
+                    // Ctrl+R reaches vim only in normal/visual (redo).
+                    let ctrl_chord_redo = modifiers.ctrl
+                        && !modifiers.shift
+                        && !modifiers.alt
+                        && key == Key::R
+                        && buffer.vim.mode != crate::vim::VimMode::Insert;
+                    let named = if ctrl_chord_redo {
+                        Some(crate::vim::NamedKey::CtrlR)
+                    } else if modifiers.ctrl || modifiers.command || modifiers.alt {
+                        None
+                    } else {
+                        match key {
+                            Key::Escape => Some(crate::vim::NamedKey::Escape),
+                            Key::Enter => Some(crate::vim::NamedKey::Enter),
+                            Key::Backspace => Some(crate::vim::NamedKey::Backspace),
+                            Key::Delete => Some(crate::vim::NamedKey::Delete),
+                            Key::ArrowLeft => Some(crate::vim::NamedKey::Left),
+                            Key::ArrowRight => Some(crate::vim::NamedKey::Right),
+                            Key::ArrowUp => Some(crate::vim::NamedKey::Up),
+                            Key::ArrowDown => Some(crate::vim::NamedKey::Down),
+                            Key::Home => Some(crate::vim::NamedKey::Home),
+                            Key::End => Some(crate::vim::NamedKey::End),
+                            Key::PageUp => Some(crate::vim::NamedKey::PageUp),
+                            Key::PageDown => Some(crate::vim::NamedKey::PageDown),
+                            _ => None,
+                        }
+                    };
+                    if let Some(named) = named {
+                        let result = feed_vim(buffer, crate::vim::VimInput::Key(named), vim_options);
+                        if result.consumed {
+                            state.scroll_to_cursor = true;
+                            if action.is_none() {
+                                if let Some(ex) = result.ex {
+                                    action = Some(EditorAction::VimEx(ex));
+                                } else if let Some(pattern) = result.search {
+                                    action = Some(EditorAction::VimSearch(pattern));
+                                }
+                            }
+                            continue;
+                        }
+                        // Insert mode: fall through to the default handler.
+                    }
+                }
                 if completion_popup_open
                     && matches!(
                         key,
@@ -3581,4 +3762,9 @@ mod tests {
         assert_eq!(hover.cursor_position().line, 0);
         assert!(hover.cursor_position().col >= 3);
     }
+}
+
+/// Snapshot the monospace font size from a `FontId`.
+fn presentation_font_size_snapshot(font_id: &FontId) -> f32 {
+    font_id.size
 }

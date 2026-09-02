@@ -114,6 +114,10 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
 
         let repo = Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        drop(cfg);
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
         std::fs::write(dir.join("f.txt"), "x\n").unwrap();
         let mut index = repo.index().unwrap();

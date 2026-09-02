@@ -278,6 +278,8 @@ pub struct TextBuffer {
     pub semantic_tokens_dirty: bool,
     pub undo_stack: UndoStack,
     recording: Option<EditRecord>,
+    /// Vim/modal-editing state (only consulted when `editor.vim_mode` is on).
+    pub vim: crate::vim::VimState,
     path: Option<PathBuf>,
     pub dirty: bool,
     pub modified: bool,
@@ -341,6 +343,7 @@ impl TextBuffer {
             semantic_tokens_dirty: true,
             undo_stack: UndoStack::default(),
             recording: None,
+            vim: crate::vim::VimState::default(),
             path: None,
             dirty: false,
             modified: false,

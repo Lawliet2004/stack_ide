@@ -815,9 +815,9 @@ fn render_node(
         let icon_color = if conflicted {
             Color32::from_rgb(220, 90, 90)
         } else {
-            file_icon_color(label, muted)
+            muted
         };
-        paint_tree_file(ui.painter(), icon_rect, icon_color);
+        crate::file_icons::paint(ui.painter(), icon_rect, label, icon_color);
     }
 
     // Label. The root is rendered slightly more prominently than its children.
