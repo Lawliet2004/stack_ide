@@ -34,16 +34,17 @@ jobs:
         run: |
           for log in /tmp/check.log /tmp/lib.log /tmp/it.log; do
             [ -f "$log" ] || continue
-            grep -E "^test .* FAILED|^error(\[E[0-9]+\])?:|^error: |^warning: unused" "$log" | head -25 |
+            sed 's/\x1b\[[0-9;]*m//g' "$log" > /tmp/plain.log
+            grep -E "^test .* FAILED|^error(\[E[0-9]+\])?:|^error: " /tmp/plain.log | head -30 |
               while IFS= read -r line; do
                 echo "::error title=ci::$line"
               done
-            grep -E "^failures:$" -A 20 "$log" | head -25 |
+            grep -E "^failures:$" -A 25 /tmp/plain.log | head -30 |
               while IFS= read -r line; do
                 echo "::error title=ci-failures::$line"
               done
             # Fallback: dump the raw tail so the failure is always visible.
-            tail -25 "$log" | while IFS= read -r line; do
+            tail -20 /tmp/plain.log | while IFS= read -r line; do
               echo "::error title=tail::$line"
             done
           done
