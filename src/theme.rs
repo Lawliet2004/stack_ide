@@ -151,8 +151,13 @@ fn rgb(value: u32) -> Color32 {
 }
 
 fn rgba(value: u32, alpha: u8) -> Color32 {
+    // Produce a genuinely premultiplied color: egui's premultiplied API expects
+    // the RGB channels already scaled by alpha. Passing un-premultiplied RGB
+    // makes every translucent theme color far more opaque than intended.
     let color = rgb(value);
-    Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha)
+    let a = alpha as u32;
+    let premul = |c: u8| (((c as u32) * a + 127) / 255) as u8;
+    Color32::from_rgba_premultiplied(premul(color.r()), premul(color.g()), premul(color.b()), alpha)
 }
 
 fn visuals(scheme: ColorScheme, colors: SemanticPalette) -> Visuals {
@@ -948,6 +953,27 @@ mod tests {
         assert!(Theme::all().iter().all(|theme| {
             !theme.serialized_id().is_empty() && !theme.display_name().is_empty()
         }));
+    }
+
+    #[test]
+    fn theme_display_names_are_unique() {
+        let names: Vec<&str> = Theme::all().iter().map(|theme| theme.display_name()).collect();
+        let unique: HashSet<_> = names.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "Theme picker must not show two entries with the same display name: {names:?}"
+        );
+    }
+
+    #[test]
+    fn rgba_produces_premultiplied_color() {
+        // rgb(0x74, 0xad, 0xe8) with alpha=64 should be R,G,B premultiplied by 64/255.
+        let color = rgba(0x74ade8, 64);
+        assert_eq!(color.r(), ((0x74u32 * 64 + 127) / 255) as u8);
+        assert_eq!(color.g(), ((0xadu32 * 64 + 127) / 255) as u8);
+        assert_eq!(color.b(), ((0xe8u32 * 64 + 127) / 255) as u8);
+        assert_eq!(color.a(), 64);
     }
 
     #[test]

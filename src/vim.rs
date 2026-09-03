@@ -63,8 +63,10 @@ impl VimMode {
 pub enum ExCommand {
     /// `:w` — save the buffer.
     Write,
-    /// `:q` / `:q!` — close the tab (app decides about unsaved prompts).
+    /// `:q` — close the tab (app decides about unsaved prompts).
     Quit,
+    /// `:q!` — close the tab without prompting about unsaved changes.
+    ForceClose,
     /// `:wq` / `:x` — save then close.
     WriteQuit,
     /// `:noh[lsearch]` — clear search highlights.
@@ -146,6 +148,17 @@ impl PendingOperator {
     }
 }
 
+/// Viewport scroll alignment requested by a Vim motion (`zz`, `zt`, `zb`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportScroll {
+    /// `zz` — center the cursor line in the viewport.
+    Center,
+    /// `zt` — place the cursor line at the top of the viewport.
+    Top,
+    /// `zb` — place the cursor line at the bottom of the viewport.
+    Bottom,
+}
+
 /// Outcome of feeding one input to the state machine.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct VimResult {
@@ -156,6 +169,8 @@ pub struct VimResult {
     /// A `/` pattern was just accepted; the app should mirror it into the
     /// search panel for highlighting.
     pub search: Option<String>,
+    /// A viewport scroll requested by `zz`/`zt`/`zb`.
+    pub viewport_scroll: Option<ViewportScroll>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -175,11 +190,26 @@ pub struct VimState {
     pub last_search: Option<String>,
     /// Current `:` or `/` line content (prompt char included).
     cmdline: String,
+    /// Direction of the in-progress or last `/`/`?` search.
+    search_forward: bool,
 }
 
 impl VimState {
     pub fn register(&self) -> &str {
         &self.register
+    }
+
+    /// Replace the unnamed register (used when system clipboard text is pasted
+    /// in Normal/Visual mode so it behaves like `"*p`/`"*P`).
+    pub fn set_core_register(&mut self, text: &str, linewise: bool) {
+        self.register = text.to_owned();
+        self.register_linewise = linewise;
+    }
+
+    /// Append text to the active `:`/`/` command line (system paste in command
+    /// mode must not insert into the buffer).
+    pub fn push_to_cmdline(&mut self, text: &str) {
+        self.cmdline.push_str(text);
     }
 
     /// Current `:`/`/` line, including the prompt character.
@@ -273,7 +303,8 @@ impl VimState {
     fn execute_ex(&mut self, line: &str, result: &mut VimResult) {
         match line.trim() {
             "w" | "write" => result.ex = Some(ExCommand::Write),
-            "q" | "quit" | "q!" | "quit!" => result.ex = Some(ExCommand::Quit),
+            "q" | "quit" => result.ex = Some(ExCommand::Quit),
+            "q!" | "quit!" => result.ex = Some(ExCommand::ForceClose),
             "wq" | "wq!" | "x" | "exit" => result.ex = Some(ExCommand::WriteQuit),
             "noh" | "nohl" | "nohlsearch" | "nohls" => {
                 result.ex = Some(ExCommand::NoHighlight)
@@ -285,16 +316,16 @@ impl VimState {
     fn execute_search(&mut self, buffer: &mut TextBuffer, line: &str, result: &mut VimResult) {
         let pattern = line.trim().to_owned();
         if pattern.is_empty() {
-            // Empty pattern repeats the last search like plain `n`.
+            // Empty pattern repeats the last search in the same direction.
             if let Some(last) = self.last_search.clone() {
-                self.jump_to_next_match(buffer, &last, true, false);
+                self.jump_to_next_match(buffer, &last, self.search_forward, false);
             }
             return;
         }
         self.last_search = Some(pattern.clone());
         result.search = Some(pattern.clone());
         // A fresh search accepts a match at the cursor position.
-        self.jump_to_next_match(buffer, &pattern, true, true);
+        self.jump_to_next_match(buffer, &pattern, self.search_forward, true);
     }
 
     // ─── Normal mode ────────────────────────────────────────────────────────
@@ -316,7 +347,7 @@ impl VimState {
         };
 
         if let Some(pending) = self.pending {
-            self.process_pending(buffer, pending, ch, options);
+            self.process_pending(buffer, pending, ch, options, result);
             return;
         }
 
@@ -382,7 +413,8 @@ impl VimState {
             }
             '/' | '?' => {
                 self.mode = VimMode::Search;
-                self.cmdline = "/".to_owned();
+                self.search_forward = ch == '/';
+                self.cmdline = if ch == '/' { "/".to_owned() } else { "?".to_owned() };
             }
             'h' => self.move_horizontal(buffer, -(count.max(1) as isize)),
             'l' => self.move_horizontal(buffer, count.max(1) as isize),
@@ -459,6 +491,7 @@ impl VimState {
         pending: Pending,
         ch: char,
         options: VimOptions,
+        result: &mut VimResult,
     ) {
         // Counts keep accumulating while pending.
         if ch.is_ascii_digit() && (ch != '0' || !self.count.is_empty()) {
@@ -489,11 +522,24 @@ impl VimState {
                 }
                 _ => self.cancel_pending(),
             },
-            Pending::Z => {
-                // zz / zt / zb — viewport centering is applied by the widget's
-                // scroll logic; accept and clear.
-                self.pending = None;
-            }
+            Pending::Z => match ch {
+                'z' => {
+                    self.take_count();
+                    result.viewport_scroll = Some(ViewportScroll::Center);
+                    self.pending = None;
+                }
+                't' => {
+                    self.take_count();
+                    result.viewport_scroll = Some(ViewportScroll::Top);
+                    self.pending = None;
+                }
+                'b' => {
+                    self.take_count();
+                    result.viewport_scroll = Some(ViewportScroll::Bottom);
+                    self.pending = None;
+                }
+                _ => self.cancel_pending(),
+            },
             Pending::Replace => {
                 let count = self.take_count();
                 self.replace_pending(buffer, ch, count);
@@ -1338,7 +1384,7 @@ impl VimState {
         if end_off <= start_off {
             return (String::new(), false);
         }
-        (buffer.text()[start_off..end_off].to_owned(), false)
+        (buffer.char_range_to_string(start_off..end_off).unwrap_or_default(), false)
     }
 
     /// Delete an inclusive (start..=end) character range; returns the text.
@@ -1358,7 +1404,7 @@ impl VimState {
         let mut deleted = String::new();
         if end_off > start_off {
             buffer.begin_edit();
-            deleted = buffer.text()[start_off..end_off].to_owned();
+            deleted = buffer.char_range_to_string(start_off..end_off).unwrap_or_default();
             let _ = buffer.replace_char_range(start_off, end_off, "");
             buffer.commit_edit();
         }
@@ -1373,7 +1419,7 @@ impl VimState {
         if end_off <= start_off {
             return;
         }
-        let text = buffer.text()[start_off..end_off].to_owned();
+        let text = buffer.char_range_to_string(start_off..end_off).unwrap_or_default();
         let transformed: String = match op {
             CaseOp::Toggle => text
                 .chars()
@@ -1515,7 +1561,7 @@ impl VimState {
         match op {
             PendingOperator::Yank => {
                 if end_off > start_off {
-                    self.register = buffer.text()[start_off..end_off].to_owned();
+                    self.register = buffer.char_range_to_string(start_off..end_off).unwrap_or_default();
                     self.register_linewise = false;
                 }
                 self.set_cursor(buffer, start);
@@ -1524,7 +1570,7 @@ impl VimState {
                 let mut deleted = String::new();
                 buffer.begin_edit();
                 if end_off > start_off {
-                    deleted = buffer.text()[start_off..end_off].to_owned();
+                    deleted = buffer.char_range_to_string(start_off..end_off).unwrap_or_default();
                     let _ = buffer.replace_char_range(start_off, end_off, "");
                 }
                 buffer.commit_edit();
@@ -1536,7 +1582,7 @@ impl VimState {
                 let mut deleted = String::new();
                 buffer.begin_edit();
                 if end_off > start_off {
-                    deleted = buffer.text()[start_off..end_off].to_owned();
+                    deleted = buffer.char_range_to_string(start_off..end_off).unwrap_or_default();
                     let _ = buffer.replace_char_range(start_off, end_off, "");
                 }
                 buffer.commit_edit();
@@ -1557,7 +1603,7 @@ impl VimState {
             }
             PendingOperator::Lowercase | PendingOperator::Uppercase => {
                 if end_off > start_off {
-                    let text = buffer.text()[start_off..end_off].to_owned();
+                    let text = buffer.char_range_to_string(start_off..end_off).unwrap_or_default();
                     let transformed = if op == PendingOperator::Uppercase {
                         text.to_uppercase()
                     } else {
@@ -1608,7 +1654,7 @@ impl VimState {
         let mut deleted = String::new();
         if end > start {
             buffer.begin_edit();
-            deleted = buffer.text()[start..end].to_owned();
+            deleted = buffer.char_range_to_string(start..end).unwrap_or_default();
             let _ = buffer.replace_char_range(start, end, "");
             buffer.commit_edit();
         }
@@ -1674,7 +1720,7 @@ impl VimState {
         let mut deleted = String::new();
         buffer.begin_edit();
         if end_off > start_off && end_off <= buffer.len_chars() {
-            deleted = buffer.text()[start_off..end_off].to_owned();
+            deleted = buffer.char_range_to_string(start_off..end_off).unwrap_or_default();
             let _ = buffer.replace_char_range(start_off, end_off, "");
         }
         buffer.commit_edit();
@@ -1692,7 +1738,7 @@ impl VimState {
         let mut deleted = String::new();
         buffer.begin_edit();
         if end_off > start_off {
-            deleted = buffer.text()[start_off..end_off].to_owned();
+            deleted = buffer.char_range_to_string(start_off..end_off).unwrap_or_default();
             let _ = buffer.replace_char_range(start_off, end_off, "");
         }
         buffer.commit_edit();
@@ -1836,7 +1882,9 @@ impl VimState {
                 break;
             }
             let start_off = char_offset(buffer, position);
-            let c = buffer.text()[start_off..].chars().next().unwrap_or(' ');
+            let c = buffer.char_range_to_string(start_off..start_off.saturating_add(1))
+            .and_then(|s| s.chars().next())
+            .unwrap_or(' ');
             let replacement = if c.is_uppercase() {
                 c.to_lowercase().next().unwrap_or(c)
             } else {
@@ -2580,6 +2628,16 @@ mod tests {
     }
 
     #[test]
+    fn ex_force_quit_is_reported_separately() {
+        let mut b = buffer("x\n");
+        let mut v = state();
+        chars(&mut b, &mut v, ":q!");
+        let result = feed(&mut b, &mut v, VimInput::Key(NamedKey::Enter));
+        assert_eq!(result.ex, Some(ExCommand::ForceClose));
+        assert_eq!(v.mode, VimMode::Normal);
+    }
+
+    #[test]
     fn undo_redo_route_through_the_buffer() {
         let mut b = buffer("one\n");
         let mut v = state();
@@ -2681,5 +2739,109 @@ mod tests {
         assert_eq!(v.register(), "keep\n");
         feed(&mut b, &mut v, VimInput::Key(NamedKey::Escape));
         assert_eq!(v.register(), "keep\n");
+    }
+
+    // ─── Unicode safety: character ranges must be sliced by char index, not
+    // byte index, or multi-byte content causes a panic.
+
+    #[test]
+    fn delete_char_on_multibyte_content_does_not_panic() {
+        let mut b = buffer("aé🙂b\n");
+        let mut v = state();
+        // Cursor starts at (0,0); `l` moves over 'é' (2 bytes), `x` deletes it.
+        chars(&mut b, &mut v, "lx");
+        assert_eq!(b.text(), "a🙂b\n");
+    }
+
+    #[test]
+    fn charwise_yank_on_multibyte_content_uses_char_offsets() {
+        let mut b = buffer("aé🙂b\n");
+        let mut v = state();
+        // `y` + `l` yanks the char under the caret (1 char, inclusive).
+        chars(&mut b, &mut v, "yl");
+        assert_eq!(v.register(), "a");
+        // Register content is valid UTF-8 and re-pastes correctly.
+        chars(&mut b, &mut v, "$p");
+        assert_eq!(b.text(), "aé🙂ba\n");
+    }
+
+    #[test]
+    fn d_e_and_change_on_multibyte_content_do_not_panic() {
+        let mut b = buffer("aé🙂b\n");
+        let mut v = state();
+        // Cursor at 0; `w` moves to the word at '🙂'; `de` deletes to it.
+        chars(&mut b, &mut v, "wde");
+        assert_eq!(b.text(), "aéb\n");
+    }
+
+    #[test]
+    fn tilde_on_multibyte_content_does_not_panic() {
+        let mut b = buffer("aé\n");
+        let mut v = state();
+        // Move to the 'é' then `~`.
+        chars(&mut b, &mut v, "l~");
+        assert_eq!(b.text(), "aÉ\n");
+    }
+
+    #[test]
+    fn replace_on_multibyte_content_does_not_panic() {
+        let mut b = buffer("aé\n");
+        let mut v = state();
+        chars(&mut b, &mut v, "lrX");
+        assert_eq!(b.text(), "aX\n");
+    }
+
+    #[test]
+    fn question_search_searches_backward() {
+        let mut b = buffer("aaa\nbbb\nccc\n");
+        let mut v = state();
+        // Move to the last line.
+        chars(&mut b, &mut v, "G");
+        // `?` starts a backward search prompt; enter the pattern and press Enter.
+        chars(&mut b, &mut v, "?bbb");
+        feed(&mut b, &mut v, VimInput::Key(NamedKey::Enter));
+        assert_eq!(cursor(&b), (1, 0));
+        // `n` repeats in the same (backward) direction.
+        feed(&mut b, &mut v, VimInput::Char('n'));
+        assert_eq!(cursor(&b), (1, 0));
+    }
+
+    #[test]
+    fn zz_centers_the_cursor_in_the_viewport() {
+        let mut b = buffer("\n\nhello\n\n");
+        let mut v = state();
+        chars(&mut b, &mut v, "G");
+        let result = chars(&mut b, &mut v, "zz");
+        assert_eq!(
+            result.viewport_scroll,
+            Some(ViewportScroll::Center),
+            "zz must request centered viewport scroll"
+        );
+    }
+
+    #[test]
+    fn zt_scrolls_cursor_to_the_top_of_the_viewport() {
+        let mut b = buffer("\n\nhello\n\n");
+        let mut v = state();
+        chars(&mut b, &mut v, "G");
+        let result = chars(&mut b, &mut v, "zt");
+        assert_eq!(
+            result.viewport_scroll,
+            Some(ViewportScroll::Top),
+            "zt must request top-aligned viewport scroll"
+        );
+    }
+
+    #[test]
+    fn zb_scrolls_cursor_to_the_bottom_of_the_viewport() {
+        let mut b = buffer("\n\nhello\n\n");
+        let mut v = state();
+        chars(&mut b, &mut v, "G");
+        let result = chars(&mut b, &mut v, "zb");
+        assert_eq!(
+            result.viewport_scroll,
+            Some(ViewportScroll::Bottom),
+            "zb must request bottom-aligned viewport scroll"
+        );
     }
 }

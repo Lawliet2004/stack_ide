@@ -15,6 +15,8 @@
 //!   extraction) are unit-tested without egui.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crossbeam_channel::{Receiver, TryRecvError};
@@ -88,6 +90,9 @@ pub struct AssistantPanel {
     /// Partial assistant output for the in-flight request.
     streaming: String,
     output_rx: Option<Receiver<ProviderEvent>>,
+    /// Set when the user clears/cancels the in-flight request; the worker
+    /// checks it between output reads and kills its child process.
+    cancel: Arc<AtomicBool>,
     error: Option<String>,
     scroll_to_bottom: bool,
     request_focus_input: bool,
@@ -103,10 +108,13 @@ impl AssistantPanel {
         &self.messages
     }
 
-    /// Clear the conversation.
+    /// Clear the conversation, cancelling any in-flight provider request.
     pub fn clear(&mut self) {
+        self.cancel.store(true, Ordering::SeqCst);
+        self.busy = false;
         self.messages.clear();
         self.streaming.clear();
+        self.output_rx = None;
         self.error = None;
     }
 
@@ -131,13 +139,23 @@ impl AssistantPanel {
                     .to_owned(),
             );
         }
-        let rendered = render_command(
-            command,
-            &prompt,
-            context,
-            self.include_file,
-            self.include_selection,
-        );
+        let rendered = if cfg!(target_os = "windows") {
+            render_command_windows(
+                command,
+                &prompt,
+                context,
+                self.include_file,
+                self.include_selection,
+            )
+        } else {
+            render_command(
+                command,
+                &prompt,
+                context,
+                self.include_file,
+                self.include_selection,
+            )
+        };
         self.messages.push(ChatMessage {
             role: Role::User,
             content: prompt,
@@ -147,9 +165,11 @@ impl AssistantPanel {
         self.error = None;
         self.streaming.clear();
         self.busy = true;
+        self.cancel.store(false, Ordering::SeqCst);
 
         let (tx, rx) = crossbeam_channel::bounded::<ProviderEvent>(64);
         self.output_rx = Some(rx);
+        let cancel_worker = self.cancel.clone();
         let spawned_worker = std::thread::Builder::new()
             .name("assistant-provider".to_owned())
             .spawn(move || {
@@ -180,22 +200,50 @@ impl AssistantPanel {
                     let _ = stdin.write_all(rendered.stdin_prompt.as_bytes());
                 }
                 child.stdin = None;
-                match child.wait_with_output() {
-                    Ok(output) => {
-                        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
-                        let stderr = String::from_utf8_lossy(&output.stderr);
-                        if text.trim().is_empty() && !stderr.trim().is_empty() {
-                            text = stderr.into_owned();
+
+                // Stream stdout incrementally. stderr is captured so that a
+                // provider that only writes to stderr still surfaces something.
+                use std::io::{BufRead, BufReader, Read};
+                let mut stdout = BufReader::new(child.stdout.take().unwrap_or_default());
+                let mut stderr = String::new();
+                let mut streamed = String::new();
+                loop {
+                    if cancel_worker.load(Ordering::SeqCst) {
+                        let _ = child.kill();
+                        let _ = tx.send(ProviderEvent::Failed("Cancelled".to_owned()));
+                        break;
+                    }
+                    let mut line = Vec::new();
+                    match stdout.read_until(b'\n', &mut line) {
+                        Ok(0) => break,
+                        Ok(_) => {
+                            let text = String::from_utf8_lossy(&line).into_owned();
+                            streamed.push_str(&text);
+                            if streamed.chars().count() > MAX_STREAM_CHARS {
+                                streamed = streamed
+                                    .chars()
+                                    .take(MAX_STREAM_CHARS)
+                                    .collect();
+                            }
+                            let _ = tx.send(ProviderEvent::Chunk(text));
                         }
-                        if text.chars().count() > MAX_STREAM_CHARS {
-                            text = text.chars().take(MAX_STREAM_CHARS).collect();
+                        Err(_) => break,
+                    }
+                }
+                let _ = child
+                    .stderr
+                    .take()
+                    .map(|mut s| s.read_to_string(&mut stderr));
+                match child.wait() {
+                    Ok(status) => {
+                        if streamed.trim().is_empty() && !stderr.trim().is_empty() {
+                            streamed = stderr;
                         }
-                        if output.status.success() || !text.trim().is_empty() {
-                            let _ = tx.send(ProviderEvent::Done(text));
+                        if status.success() || !streamed.trim().is_empty() {
+                            let _ = tx.send(ProviderEvent::Done(streamed));
                         } else {
                             let _ = tx.send(ProviderEvent::Failed(format!(
-                                "Provider exited with {}",
-                                output.status
+                                "Provider exited with {status}"
                             )));
                         }
                     }
@@ -527,8 +575,13 @@ fn split_code_blocks(text: &str) -> Vec<Segment> {
         };
         segments.push(Segment::Code(body.trim_end().to_owned()));
     }
-    // Prose after the final fence is intentionally not emitted as a segment.
-    let _ = rest;
+    // Preserve trailing prose after the last fence (and text-only messages).
+    if !rest.trim().is_empty() {
+        let trailing = rest.to_owned();
+        if !trailing.trim().is_empty() {
+            segments.push(Segment::Text(trailing));
+        }
+    }
     segments
 }
 
@@ -552,6 +605,28 @@ pub fn render_command(
     context: &EditorContext,
     include_file: bool,
     include_selection: bool,
+) -> RenderedCommand {
+    render_command_with_quote(template, prompt, context, include_file, include_selection, shell_quote)
+}
+
+/// Windows variant used by the worker when spawning `cmd /C`.
+pub fn render_command_windows(
+    template: &str,
+    prompt: &str,
+    context: &EditorContext,
+    include_file: bool,
+    include_selection: bool,
+) -> RenderedCommand {
+    render_command_with_quote(template, prompt, context, include_file, include_selection, cmd_quote)
+}
+
+fn render_command_with_quote(
+    template: &str,
+    prompt: &str,
+    context: &EditorContext,
+    include_file: bool,
+    include_selection: bool,
+    quote: fn(&str) -> String,
 ) -> RenderedCommand {
     let file_name = context
         .file_path
@@ -577,39 +652,46 @@ pub fn render_command(
         }
     }
     let full_prompt = format!("{prompt}{context_block}");
-    // A placeholder already wrapped in single quotes in the template gets
-    // escape-only substitution (the template supplies the outer quotes); a
-    // bare placeholder gets full POSIX quoting.
-    let quoted = |value: &str| format!("'{}'", value.replace('\'', r"'\''"));
+    let quoted = |value: &str| quote(value);
     let substitute = |template: &str, prompt_value: &str| {
         template
             .replace("'{prompt}'", &quoted(prompt_value))
-            .replace("{prompt}", &shell_quote(prompt_value))
+            .replace("{prompt}", &quote(prompt_value))
             .replace("'{file}'", &quoted(&file_name))
-            .replace("{file}", &shell_quote(&file_name))
-            .replace("'{selection}'", &quoted(context.selection.as_deref().unwrap_or("")))
-            .replace("{selection}", &shell_quote(
-                context.selection.as_deref().unwrap_or(""),
-            ))
+            .replace("{file}", &quote(&file_name))
+            .replace(
+                "'{selection}'",
+                &quoted(context.selection.as_deref().unwrap_or("")),
+            )
+            .replace(
+                "{selection}",
+                &quote(context.selection.as_deref().unwrap_or("")),
+            )
             .replace("{language}", &language)
     };
+    let command = substitute(template, &full_prompt);
     if template.contains("{prompt}") {
         RenderedCommand {
-            command: substitute(template, &full_prompt),
+            command,
             stdin_prompt: String::new(),
         }
     } else {
         RenderedCommand {
-            command: substitute(template, &full_prompt),
+            command,
             stdin_prompt: full_prompt,
         }
     }
 }
 
-/// Single-argument POSIX shell quoting. On Windows the caller runs `cmd /C`,
-/// where the outer quotes added here are also the correct escaping.
+/// Single-argument POSIX shell quoting (used with `sh -c`).
 fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// Best-effort `cmd /C` quoting: wrap in double quotes and double any interior
+/// double quote (the common escaping convention for a single cmd argument).
+fn cmd_quote(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 /// Extract the first fenced code block (used by tests and future inline assist).
@@ -680,11 +762,60 @@ mod tests {
     }
 
     #[test]
+    fn windows_command_uses_double_quote_escaping() {
+        let rendered = render_command_windows(
+            "llm \"{prompt}\"",
+            "say \"hi\"",
+            &EditorContext::default(),
+            false,
+            false,
+        );
+        assert_eq!(rendered.command, "llm \"say \"\"hi\"\"\"");
+    }
+
+    #[test]
+    fn clear_stops_and_cancels_the_in_flight_request() {
+        let mut panel = AssistantPanel::default();
+        panel.draft = "hi".to_owned();
+        let _ = panel.send("echo hi", &EditorContext::default());
+        assert!(panel.is_busy());
+
+        panel.clear();
+
+        assert!(!panel.is_busy(), "clear must immediately unbusy the panel");
+        assert!(panel.output_rx.is_none());
+        assert!(panel.streaming.is_empty());
+        assert!(
+            panel.cancel.load(Ordering::Relaxed),
+            "clear must set the worker cancellation flag"
+        );
+    }
+
+    #[test]
     fn code_blocks_are_split_and_extracted() {
         let text = "Here you go:\n```rust\nfn a() {}\nfn b() {}\n```\nDone.";
         let segments = split_code_blocks(text);
-        assert_eq!(segments.len(), 2);
+        assert_eq!(segments.len(), 3);
+        assert!(matches!(&segments[0], Segment::Text(t) if t.trim() == "Here you go:"));
+        assert!(matches!(&segments[1], Segment::Code(c) if c.trim() == "fn a() {}\nfn b() {}"));
+        assert!(matches!(&segments[2], Segment::Text(t) if t.trim() == "Done."));
         assert_eq!(first_code_block(text).as_deref(), Some("fn a() {}\nfn b() {}"));
+    }
+
+    #[test]
+    fn trailing_prose_after_last_fence_is_preserved() {
+        let text = "```rust\nfn a() {}\n```\nHope this helps.";
+        let segments = split_code_blocks(text);
+        assert_eq!(segments.len(), 2);
+        assert!(matches!(&segments[1], Segment::Text(t) if t.trim() == "Hope this helps."));
+    }
+
+    #[test]
+    fn plain_text_message_renders_as_text() {
+        let text = "Just a normal reply with no code.";
+        let segments = split_code_blocks(text);
+        assert_eq!(segments.len(), 1);
+        assert!(matches!(&segments[0], Segment::Text(t) if t.trim() == text));
     }
 
     #[test]

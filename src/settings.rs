@@ -187,8 +187,8 @@ impl Theme {
 
     pub const fn display_name(self) -> &'static str {
         match self {
-            Self::Dark => "One Dark",
-            Self::Light => "One Light",
+            Self::Dark => "Default Dark",
+            Self::Light => "Default Light",
             Self::System => "System",
             Self::Nord => "Nord",
             Self::Dracula => "Dracula",
@@ -275,7 +275,7 @@ pub struct EditorSettings {
     #[serde(default = "default_auto_save_delay_ms")]
     pub auto_save_delay_ms: u64,
     /// Render diagnostic messages inline at the end of the line (Zed-style).
-    #[serde(default = "default_false_setting")]
+    #[serde(default = "default_inline_diagnostics")]
     pub inline_diagnostics: bool,
 }
 
@@ -371,6 +371,10 @@ impl Default for InlayHintSettings {
 
 fn default_false_setting() -> bool {
     false
+}
+
+fn default_inline_diagnostics() -> bool {
+    true
 }
 
 fn default_tab_width() -> u32 {
@@ -855,6 +859,19 @@ mod tests {
         let toml = "version = 1";
         let settings: Settings = toml::from_str(toml).unwrap();
         assert_eq!(settings, Settings::default());
+    }
+
+    #[test]
+    fn missing_inline_diagnostics_defaults_to_enabled() {
+        // A settings file written before the field existed must default it to
+        // the same value as the in-memory EditorSettings::default().
+        let toml = "[editor]\n";
+        let settings: Settings = toml::from_str(toml).unwrap();
+        assert_eq!(
+            settings.editor.inline_diagnostics,
+            Settings::default().editor.inline_diagnostics
+        );
+        assert!(settings.editor.inline_diagnostics);
     }
 
     #[test]

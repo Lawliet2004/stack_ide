@@ -189,7 +189,6 @@ pub mod app;
 pub mod assistant;
 pub mod color_picker;
 pub mod vim;
-pub mod config;
 pub mod content_error;
 pub mod debug;
 pub mod diff_viewer;
@@ -224,11 +223,6 @@ pub mod texture_registry;
 pub mod theme;
 pub mod trust_ui;
 pub mod workspace;
-
-// ─── src/workspace_features/ — Features 1–8 ─────────────────────────────────
-/// Workspace feature modules: session, roots, editorconfig, templates, tasks,
-/// trust, recent, exclude.
-pub mod workspace_features;
 
 pub mod zen_mode;
 

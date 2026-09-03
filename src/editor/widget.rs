@@ -460,6 +460,7 @@ pub struct EditorState {
     last_path: Option<PathBuf>,
     fold_chord_armed: bool,
     pub desired_scroll_y: Option<f32>,
+    pub viewport_alignment: Option<crate::vim::ViewportScroll>,
     column_anchor: Option<CursorPosition>,
 }
 
@@ -473,6 +474,7 @@ impl Default for EditorState {
             last_path: None,
             fold_chord_armed: false,
             desired_scroll_y: None,
+            viewport_alignment: None,
             column_anchor: None,
         }
     }
@@ -1498,15 +1500,36 @@ impl EditorWidget {
                                             message.to_owned()
                                         };
                                         let line_right = text_left + galley.size().x;
+                                        let font = FontId::monospace(font_size * 0.85);
+                                        let color = diagnostic_color(first.severity, palette.semantic);
+                                        // Keep inline diagnostics inside the visible
+                                        // editor width so they never overlap the
+                                        // minimap strip or overflow the viewport.
+                                        let mut inline = format!("● {text}");
+                                        let visible_right = viewport.left() + viewport.width();
+                                        let available_px =
+                                            (visible_right - (line_right + 24.0)).max(0.0);
+                                        let measure = |label: &str| {
+                                            painter.layout_no_wrap(label.to_owned(), font.clone(), color)
+                                        };
+                                        while inline.chars().count() > 1
+                                            && measure(&inline).size().x > available_px
+                                        {
+                                            inline.pop();
+                                        }
+                                        if measure(&inline).size().x > available_px {
+                                            inline.pop();
+                                            inline.push('…');
+                                        }
                                         painter.text(
                                             pos2(
                                                 line_right + 24.0,
                                                 y + shift + row_height * 0.5,
                                             ),
                                             Align2::LEFT_CENTER,
-                                            format!("● {text}"),
-                                            FontId::monospace(font_size * 0.85),
-                                            diagnostic_color(first.severity, palette.semantic),
+                                            inline,
+                                            font,
+                                            color,
                                         );
                                     }
                                 }
@@ -1606,8 +1629,17 @@ impl EditorWidget {
                                     ),
                                 );
                                 ui.scroll_to_rect(reveal, Some(Align::Center));
+                                state.viewport_alignment = None;
                             } else if let Some(rect) = cursor_rect {
-                                // Normal scroll to cursor behavior
+                                // Normal scroll to cursor behavior, or an explicit
+                                // Vim `zz`/`zt`/`zb` alignment request.
+                                let alignment = state.viewport_alignment.take();
+                                let align = match alignment {
+                                    Some(crate::vim::ViewportScroll::Top) => Align::Min,
+                                    Some(crate::vim::ViewportScroll::Center) => Align::Center,
+                                    Some(crate::vim::ViewportScroll::Bottom) => Align::Max,
+                                    None => Align::Center,
+                                };
                                 let reveal = Rect::from_min_max(
                                     pos2(rect.left() - TEXT_PADDING, rect.top() - row_height * 2.0),
                                     pos2(
@@ -1615,7 +1647,7 @@ impl EditorWidget {
                                         rect.bottom() + row_height * 2.0,
                                     ),
                                 );
-                                ui.scroll_to_rect(reveal, Some(Align::Center));
+                                ui.scroll_to_rect(reveal, Some(align));
                             }
                             state.scroll_to_cursor = false;
                         }
@@ -1994,6 +2026,9 @@ fn handle_keyboard_input(
                     // the state machine; other modes consume or no-op.
                     for ch in text.chars() {
                         let result = feed_vim(buffer, crate::vim::VimInput::Char(ch), vim_options);
+                        if let Some(scroll) = result.viewport_scroll {
+                            state.viewport_alignment = Some(scroll);
+                        }
                         if result.consumed && action.is_none() {
                             if let Some(ex) = result.ex {
                                 action = Some(EditorAction::VimEx(ex));
@@ -2013,7 +2048,31 @@ fn handle_keyboard_input(
                 }
             }
             Event::Paste(text) if !text.is_empty() => {
-                let _ = buffer.insert_at_cursors(&text);
+                if vim_enabled {
+                    match buffer.vim.mode {
+                        crate::vim::VimMode::Insert => {
+                            // Insert-mode paste flows through the buffer like typing.
+                            let _ = buffer.insert_at_cursors(&text);
+                        }
+                        crate::vim::VimMode::Normal
+                        | crate::vim::VimMode::Visual
+                        | crate::vim::VimMode::VisualLine => {
+                            // Treat pasted text as charwise register content, then `p`.
+                            buffer.vim.set_core_register(&text, false);
+                            let result =
+                                feed_vim(buffer, crate::vim::VimInput::Char('p'), vim_options);
+                            if result.consumed && action.is_none() {
+                                action = result.ex.map(EditorAction::VimEx);
+                                // Visual paste stays in Normal mode after the swap.
+                            }
+                        }
+                        crate::vim::VimMode::Command | crate::vim::VimMode::Search => {
+                            buffer.vim.push_to_cmdline(&text);
+                        }
+                    }
+                } else {
+                    let _ = buffer.insert_at_cursors(&text);
+                }
                 state.preferred_col = None;
                 state.scroll_to_cursor = true;
             }
@@ -2054,6 +2113,9 @@ fn handle_keyboard_input(
                     };
                     if let Some(named) = named {
                         let result = feed_vim(buffer, crate::vim::VimInput::Key(named), vim_options);
+                        if let Some(scroll) = result.viewport_scroll {
+                            state.viewport_alignment = Some(scroll);
+                        }
                         if result.consumed {
                             state.scroll_to_cursor = true;
                             if action.is_none() {

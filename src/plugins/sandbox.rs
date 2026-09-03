@@ -13,11 +13,37 @@ pub fn apply_sandbox(lua: &Lua) -> LuaResult<()> {
     globals.set("load", LuaValue::Nil)?;
     globals.set("loadstring", LuaValue::Nil)?;
     globals.set("dofile", LuaValue::Nil)?;
+    globals.set("require", LuaValue::Nil)?;
 
     // Override print() to redirect to stderr with plugin name prefix
     // This will be done per-plugin in api.rs when we know the plugin name
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_sandbox_removes_dangerous_libraries() {
+        let lua = Lua::new();
+        apply_sandbox(&lua).unwrap();
+        assert!(lua.globals().get::<mlua::Value>("os").unwrap().is_nil());
+        assert!(lua.globals().get::<mlua::Value>("io").unwrap().is_nil());
+        assert!(lua.globals().get::<mlua::Value>("package").unwrap().is_nil());
+        assert!(lua.globals().get::<mlua::Value>("debug").unwrap().is_nil());
+        assert!(lua.globals().get::<mlua::Value>("load").unwrap().is_nil());
+        assert!(lua.globals().get::<mlua::Value>("loadstring").unwrap().is_nil());
+        assert!(lua.globals().get::<mlua::Value>("dofile").unwrap().is_nil());
+    }
+
+    #[test]
+    fn require_is_not_available_after_sandbox() {
+        let lua = Lua::new();
+        apply_sandbox(&lua).unwrap();
+        assert!(lua.globals().get::<mlua::Value>("require").unwrap().is_nil());
+    }
 }
 
 /// Sets an instruction count hook to prevent infinite loops.

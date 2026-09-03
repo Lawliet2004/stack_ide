@@ -42,15 +42,15 @@ Legend: ✅ parity or equivalent · 🟡 partial (exists, needs polish) · ❌ m
 
 | Zed capability | Status | Notes |
 |---|---|---|
-| Theme system with live-preview theme selector | 🟡 | 5 built-ins; Zed defaults are **One Dark / One Light** — not present. **Phase 1 adds One Dark/Light, Ayu, Gruvbox, Catppuccin + Ctrl+K Ctrl+T style picker.** |
-| Per-filetype icons in project panel & tabs (icon themes) | 🟡 | Tree has color tints only. **Phase 1 adds a painted icon set.** |
+| Theme system with live-preview theme selector | ✅ | Built-ins include Default Dark/Light, One Dark/Light, Ayu, Gruvbox, Catppuccin; picker has unique display names. |
+| Per-filetype icons in project panel & tabs (icon themes) | 🟡 | Tree has color tints only. Roadmap. |
 | Zen mode / distraction free | ✅ | `zen_mode.rs` |
-| Inline diagnostics (message rendered at end of line) | ❌ | Squiggle+tooltip only today. **Phase 1.** |
+| Inline diagnostics (message rendered at end of line) | ✅ | Square/underline + end-of-line message; editor clips to visible width. |
 | Notification center (dismissable, typed) | 🟡 | Plugin toasts only; roadmap Phase 3. |
 | Pane zoom, drag tabs between panes | 🟡 | Split/focus exists (`panes/`); zoom & DnD roadmap Phase 3. |
-| Welcome screen, recent projects | ✅ | `workspace_features/recent.rs` |
+| Welcome screen, recent projects | ✅ | `app.rs` recent workspaces / recent files. |
 | Settings UI (live-preview) | ✅ | `app.rs` settings modal |
-| Keymap customization (TOML) | ✅ | `config/keybinds.rs` (Zed uses JSON keymaps; equivalent) |
+| Keymap customization (TOML) | ✅ | Command specs in `app.rs`; legacy `src/config/keybinds.rs` removed. |
 
 ### C. Language intelligence / backend
 
@@ -126,7 +126,8 @@ stronger than Zed's baseline today.
 3. **File-type icons** (`src/file_icons.rs`) — painted brand-colored monogram
    badges for 27 file kinds in the project tree, editor tabs, and quick-open.
 4. **Auto save** — `off | after_delay | focus_change` with configurable delay,
-   routed through `write_buffer_to_disk` so LSP `didSave`/git stay correct.
+   routed through `write_buffer_to_disk` so git status stays correct. LSP
+   `didSave` remains deliberately off pending explicit approval.
 5. **Inline diagnostics** — severity-colored end-of-line messages (Zed-style),
    `editor.inline_diagnostics` setting.
 6. **Assistant panel** (`src/assistant.rs`) — right-dock conversation UI with

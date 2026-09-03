@@ -15,40 +15,37 @@ Audited against the phased master implementation plan on 2026-06-21.
 |---|---|---|
 | Stateless editor widget and upward action flow | Implemented | `src/editor/widget.rs` retains the frame handoff architecture and extensive regression tests. |
 | Non-blocking LSP worker and typed routing | Implemented for current features | `src/lsp/transport.rs`, `src/lsp/types.rs`, and `src/app.rs` use correlated typed completion, hover, goto, symbol, and format responses. |
-| Existing plugin sandbox | Implemented | `src/plugins/sandbox.rs` and `src/plugins/api.rs` restrict plugin APIs and workspace file access. Workspace trust still needs wiring before plugin load. |
+| Existing plugin sandbox | Implemented | `src/plugins/sandbox.rs` and `src/plugins/api.rs` restrict plugin APIs, remove `os`/`io`/`package`/`require`/`dofile`, and cap instructions. Workspace trust now gates plugin loading; tests assert the removed globals are `nil`. |
 | Git hunks and basic panel | Partial | `src/git/diff.rs` implements hunk parsing/operations; the generalized diff document, side-by-side UI, sources, synchronized scrolling, and intraline highlighting are missing. |
 | Panes and terminal tabs | Partial | Pane layout and multiple `TerminalPane` values exist. Named/reorderable/splittable/restored terminal sessions and lifecycle metadata are missing. |
-| Multi-root workspace and deepest-root ownership | Foundation added | `src/workspace.rs` adds ordered roots, stable `RootId`, canonical duplicate handling, and deepest-root ownership with tests. App, explorer, LSP, Git, plugins, terminals, and persistence still use the legacy `FileTree::root_path`. |
+| Multi-root workspace and deepest-root ownership | Partial | `src/workspace.rs` adds ordered roots, stable `RootId`, canonical duplicate handling, and deepest-root ownership with tests. App LSP/hover/outline/task/terminal/profiler/plugin paths now resolve roots through `workspace_root_for_path`; a single-file fallback to `FileTree::root_path` remains in the editor render loop. |
 | URI-backed local/SSH document identity | Foundation added | `DocumentUri` distinguishes local and `ssh://` documents. Buffers/tabs still use `PathBuf`; no SSH transport is wired. |
-| Per-root workspace trust | Foundation added | Default-deny `TrustStore` persists canonical roots atomically outside caller-selected workspace paths and gates executable capabilities. The application must enforce it at all LSP/plugin/terminal/debug/profiler entry points and add trust UI. |
-| Versioned atomic session persistence | Foundation added | `SessionState` atomically saves/loads roots, URI tabs, active document, panel height, terminal names, and recovery text; corrupt state and missing local files recover safely. Pane/cursor/selection/scroll capture and application startup/shutdown wiring remain. |
-| Shared background jobs | Foundation added | `BackgroundJobs` supplies root-scoped progress, cancellation, completion, failure, and structured errors. Git/SSH/marketplace/DAP/profiler workers are not yet connected. |
+| Per-root workspace trust | Implemented (core paths) | Default-deny `TrustStore` persists canonical roots atomically outside caller-selected workspace paths. `trust_allows` fails closed; terminals, profiler, tasks, plugin reload, and LSP lazy-server spawn are gated. Trust prompt is shown before LSP/plugins start. Git remote operations still use `git2` and are **not** gated yet — documented as a deliberate remaining gap. |
+| Versioned atomic session persistence | Removed (deliberate) | The plan chose delete over wire for `SessionState`; `BlueIdeApp` continues to use `AppSessionState` (`src/app.rs`) for pane/tab/bookmark/root restore. |
+| Shared background jobs | Removed (deliberate) | `BackgroundJobs` and its lifecycle tests were removed. Git/SSH/marketplace/DAP/profiler use their own progress/status state. |
 | Multiple cursors and multi-selection edits | Missing | Buffer/editor state remains single-cursor. Alt+Click, Ctrl+D, normalization, right-to-left multi-edit transactions, and single-revision LSP sync are absent. |
 | Transaction history and history panel | Missing | Existing undo behavior is not the specified bounded `EditTransaction` model and has no jumpable history panel. |
-| Ctrl+G line/column UI | Partial | Key binding exists in `src/config/keybinds.rs`; no focused line/column input and navigation flow was found. |
+| Ctrl+G line/column UI | Partial | `GoToLine` binding exists in app command specs; no dedicated focused line/column input and navigation flow. |
 | Ctrl+T multi-root workspace symbols | Missing | Document symbols exist, but no workspace-symbol request variant, aggregation, debounce, fuzzy ranking, stale rejection, or Ctrl+T UI exists. |
-| Signature help | Missing | No typed request/response, trigger policy, stale gate, or caret popup exists. |
-| Code actions and workspace edits | Missing | No typed code-action request/UI, command execution, validated multi-file/resource edit application, preview, or partial-failure reporting exists. |
+| Signature help | Partial | Typed request/response plus a caret popup exist; the signature-help state machine and multi-request ordering are less complete than the implementation plan. |
+| Code actions and workspace edits | Partial | Code-action request and popup exist; command execution, validated multi-file/resource edit application, preview, and partial-failure reporting are missing. |
 | Git fetch/pull/push worker UX | Missing | No authenticated/cancellable progress worker or remote/ref/conflict UX exists. |
 | SSH/SFTP remote editing | Missing | No connection manager, known-host verification, browsing, save conflict detection, reconnect, or atomic upload exists. |
 | Signed extension marketplace | Missing | No index client, signature/hash verification, safe archive extraction, staged install/rollback/update/uninstall implementation exists. |
 | DAP debugging | Missing | No DAP framing/client/session types, adapter lifecycle, breakpoint/step/thread/stack/scope/variable UX exists. |
-| Rust flamegraph profiling | Missing | No trust-gated profiler worker or vetted SVG viewer exists. |
+| Rust flamegraph profiling | Partial | Trust-gated profiler panel with a flamegraph/SVG viewer exists; the runner still shells out to `cargo flamegraph` and lacks a full cancellation/progress model. |
 
 ## Verification
 
-- `cargo test --lib workspace::tests`: 5 passed.
-- Full library suite invoked by integration guards: 468 passed.
-- `cargo check`: passed with existing warnings.
-- `cargo test --test integration_test`: one pre-existing policy failure because `mlua` is present in `Cargo.toml` but absent from the dependency allowlist; two nested full-suite guards make this command exceed 120 seconds despite the 468 library tests passing.
-- `cargo fmt --check`: pre-existing failure in `src/app.rs` due broad formatting differences and trailing whitespace. The new `src/workspace.rs` is rustfmt-formatted.
+- No local Rust toolchain was available while the fixes were authored; verification relies entirely on GitHub Actions (`cargo test --lib`, `cargo clippy --lib -- -D warnings`, `cargo fmt --check`).
+- The pre-existing integration policy failure (`mlua` absent from the dependency allowlist) still needs resolution before `cargo test --test integration_test` goes green.
 
 ## Required implementation order
 
-1. Wire `Workspace`, `TrustStore`, `SessionState`, and `BackgroundJobs` into `BlueIdeApp`; migrate subsystem maps to `RootId` and enforce default-deny trust.
-2. Implement cursor sets and transaction-based edits/history because editor, completion, and LSP work depend on them.
-3. Add typed workspace-symbol, signature-help, and code-action protocol paths with stale/version/root validation.
-4. Build generalized diff and named terminal session models, then persist their metadata.
-5. Add remote editing, marketplace, DAP, and profiler as separate worker-backed vertical slices with dedicated security tests.
+1. (Done) Migrate `Workspace`/`TrustStore` into `BlueIdeApp`; enforce default-deny trust for terminals, profiler, tasks, plugins, and LSP server spawn; move the trust prompt before plugin/LSP startup.
+2. (Remaining) Implement cursor sets and transaction-based edits/history because editor, completion, and LSP work depend on them.
+3. (Remaining) Add typed workspace-symbol, signature-help, and code-action protocol paths with stale/version/root validation.
+4. (Remaining) Build generalized diff and named terminal session models, then persist their metadata.
+5. (Remaining) Add remote editing, marketplace, DAP, and profiler as separate worker-backed vertical slices with dedicated security tests.
 
-The complete master plan is a multi-phase product program, not a single safe patch. Treating foundational types as if they were already integrated would leave executable features outside trust enforcement and create security regressions.
+The complete master plan is a multi-phase product program, not a single safe patch. Trust enforcement now covers the executable paths that were reachable at review time; remote/marketplace/DAP remain unwired and should land as separate gated slices.

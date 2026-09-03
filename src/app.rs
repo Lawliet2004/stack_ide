@@ -84,7 +84,7 @@ use crate::tasks::TaskPanelState;
 use crate::project_template::NewProjectState;
 use crate::terminal_mux::TerminalMux;
 use crate::trust_ui::TrustPromptState;
-use crate::workspace::{BackgroundJobs, SessionState, TrustStore, Workspace};
+use crate::workspace::{TrustStore, Workspace};
 use crate::zen_mode::ZenState;
 use crate::text::font_loader;
 
@@ -233,9 +233,7 @@ struct SignatureHelpState {
     /// Pending correlation id (cleared when the response arrives).
     pub pending_id: Option<u64>,
     /// Path + cursor at which the last request was sent.
-    #[allow(dead_code)]
     pub last_request_path: Option<std::path::PathBuf>,
-    #[allow(dead_code)]
     pub last_request_cursor: Option<CursorPosition>,
 }
 
@@ -519,7 +517,7 @@ impl BlueIdeApp {
                         }
                         if ui
                             .add_enabled(
-                                self.tree.root_path.is_some(),
+                                !self.workspace.roots().is_empty(),
                                 egui::Button::new("Go to Symbol...     Ctrl+T"),
                             )
                             .clicked()
@@ -1317,8 +1315,6 @@ pub struct BlueIdeApp {
     // ─── Foundation subsystems ────────────────────────────────────────────────
     pub workspace: Workspace,
     pub trust_store: Option<TrustStore>,
-    pub session_state: SessionState,
-    pub background_jobs: BackgroundJobs,
     pub recent_files: Vec<PathBuf>,
     recent_files_state: RecentFilesState,
     recent_workspaces_state: RecentWorkspacesState,
@@ -1603,8 +1599,6 @@ impl BlueIdeApp {
             plugin_system: PluginSystem::new(),
             workspace: Workspace::default(),
             trust_store: None,
-            session_state: SessionState::default(),
-            background_jobs: BackgroundJobs::default(),
             recent_files: Vec::new(),
             recent_files_state: RecentFilesState::default(),
             recent_workspaces_state: RecentWorkspacesState::default(),
@@ -1775,14 +1769,14 @@ impl BlueIdeApp {
                 if let Some(ref client) = self.lsp {
                     client.request_document_symbol(&path, id)
                 } else {
-                    let root = self.tree.root_path.clone().unwrap_or_default();
+                    let root = root_path.clone();
                     self.lsp_manager
                         .request_document_symbol(&path, id, &self.settings, &root)
                 }
             }
             #[cfg(not(test))]
             {
-                let root = self.tree.root_path.clone().unwrap_or_default();
+                let root = root_path.clone();
                 self.lsp_manager
                     .request_document_symbol(&path, id, &self.settings, &root)
             }
@@ -1856,14 +1850,14 @@ impl BlueIdeApp {
                 if let Some(ref client) = self.lsp {
                     client.request_inlay_hints(&path, start_line, end_line, id)
                 } else {
-                    let root = self.tree.root_path.clone().unwrap_or_default();
+                    let root = root_path.clone();
                     self.lsp_manager
                         .request_inlay_hints(&path, start_line, end_line, id, &self.settings, &root)
                 }
             }
             #[cfg(not(test))]
             {
-                let root = self.tree.root_path.clone().unwrap_or_default();
+                let root = root_path.clone();
                 self.lsp_manager
                     .request_inlay_hints(&path, start_line, end_line, id, &self.settings, &root)
             }
@@ -2083,9 +2077,12 @@ impl BlueIdeApp {
                 self.error_message = None;
                 self.git = GitRepo::open(rpath);
                 self.refresh_git_state();
-                self.start_lsp(rpath.clone());
 
-                let _ = self.workspace.add_root(rpath.clone());
+                let restored_root = self
+                    .workspace
+                    .add_root(rpath.clone())
+                    .ok()
+                    .and_then(|id| self.workspace.root(id).cloned());
                 self.touch_recent_workspace(rpath.clone());
                 if self.trust_store.is_none() {
                     if let Some(config_dir) = directories::ProjectDirs::from("", "", "blue-ide") {
@@ -2094,10 +2091,27 @@ impl BlueIdeApp {
                     }
                 }
 
-                let plugin_dir = rpath.join(".blue").join("plugins");
-                self.plugin_system.reload_all();
-                self.plugin_system.load_all(&plugin_dir);
-                self.drain_plugin_actions();
+                // Do not auto-start LSP/plugins for a restored root until it is trusted.
+                let trusted = self
+                    .trust_store
+                    .as_ref()
+                    .and_then(|ts| {
+                        restored_root.as_ref().map(|root| {
+                            ts.permits(root, crate::workspace::ExecutableCapability::Plugin)
+                        })
+                    })
+                    .unwrap_or(false);
+
+                if !trusted {
+                    self.trust_prompt.prompt(rpath.clone());
+                } else {
+                    self.lsp_manager.mark_root_trusted(rpath);
+                    self.start_lsp(rpath.clone());
+                    let plugin_dir = rpath.join(".blue").join("plugins");
+                    self.plugin_system.reload_all();
+                    self.plugin_system.load_all(&plugin_dir);
+                    self.drain_plugin_actions();
+                }
             }
         }
         
@@ -2273,6 +2287,21 @@ impl BlueIdeApp {
             })
     }
 
+    /// Default-deny trust check. When no trust store is loaded (e.g. it could
+    /// not be persisted) or no workspace root exists, executable capabilities
+    /// are NOT permitted.
+    fn trust_allows(&self, capability: crate::workspace::ExecutableCapability) -> bool {
+        self.trust_store
+            .as_ref()
+            .and_then(|ts| {
+                self.workspace
+                    .roots()
+                    .first()
+                    .map(|root| ts.permits(root, capability))
+            })
+            .unwrap_or(false)
+    }
+
     fn open_workspace_folder(&mut self, path: PathBuf, add_to_workspace: bool) {
         if !add_to_workspace {
             self.workspace = Workspace::default();
@@ -2293,7 +2322,7 @@ impl BlueIdeApp {
         self.error_message = None;
         self.git = GitRepo::open(&path);
         self.refresh_git_state();
-        self.start_lsp(path.clone());
+
         let opened_root = self
             .workspace
             .add_root(path.clone())
@@ -2307,6 +2336,18 @@ impl BlueIdeApp {
                 self.trust_store = crate::workspace::TrustStore::load(trust_path).ok();
             }
         }
+
+        // Fail closed: executable capabilities (plugins, LSP, tasks, terminals,
+        // profiler) only start after the root is explicitly trusted.
+        let trusted = self
+            .trust_store
+            .as_ref()
+            .and_then(|ts| {
+                opened_root
+                    .as_ref()
+                    .map(|root| ts.permits(root, crate::workspace::ExecutableCapability::Plugin))
+            })
+            .unwrap_or(false);
 
         let needs_prompt = self.trust_store.as_ref().is_some_and(|ts| {
             opened_root
@@ -2327,10 +2368,14 @@ impl BlueIdeApp {
 
         self.reload_tasks();
 
-        let plugin_dir = path.join(".blue").join("plugins");
-        self.plugin_system.reload_all();
-        self.plugin_system.load_all(&plugin_dir);
-        self.drain_plugin_actions();
+        if trusted {
+            self.lsp_manager.mark_root_trusted(&path);
+            self.start_lsp(path.clone());
+            let plugin_dir = path.join(".blue").join("plugins");
+            self.plugin_system.reload_all();
+            self.plugin_system.load_all(&plugin_dir);
+            self.drain_plugin_actions();
+        }
     }
 
 
@@ -2410,6 +2455,18 @@ impl BlueIdeApp {
         } else {
             self.close_file(path);
         }
+    }
+
+    /// Force-close a file (`:q!`) without prompting about unsaved changes.
+    fn request_close_file_force(&mut self, path: &Path) {
+        if self.pinned_tabs.contains(path) {
+            return;
+        }
+        if self.pending_close.as_deref() == Some(path) {
+            self.pending_close = None;
+            self.focus_cancel_on_modal_open = false;
+        }
+        self.close_file(path);
     }
 
     fn cycle_tab(&mut self, direction: isize) {
@@ -2574,9 +2631,15 @@ impl BlueIdeApp {
         self.apply_bottom_panel_settings_from_prefs();
         self.settings_feedback = Some("Settings saved".to_owned());
 
-        if let Some(root) = self.tree.root_path.clone() {
+        let workspace_roots: Vec<_> = self
+            .workspace
+            .roots()
+            .iter()
+            .map(|root| root.path.clone())
+            .collect();
+        for root in &workspace_roots {
             self.lsp_manager
-                .handle_settings_change(&old_settings.lsp, &self.settings.lsp, &root);
+                .handle_settings_change(&old_settings.lsp, &self.settings.lsp, root);
         }
 
         if close {
@@ -2595,11 +2658,17 @@ impl BlueIdeApp {
                 self.apply_bottom_panel_settings_from_prefs();
                 self.settings_feedback = Some("Settings reloaded".to_owned());
 
-                if let Some(root) = self.tree.root_path.clone() {
+                let workspace_roots: Vec<_> = self
+                    .workspace
+                    .roots()
+                    .iter()
+                    .map(|root| root.path.clone())
+                    .collect();
+                for root in &workspace_roots {
                     self.lsp_manager.handle_settings_change(
                         &old_settings.lsp,
                         &self.settings.lsp,
-                        &root,
+                        root,
                     );
                 }
             }
@@ -3832,7 +3901,10 @@ impl BlueIdeApp {
         let Some(path) = self.active.clone() else {
             return;
         };
-        if !is_lsp_path(&self.settings, self.tree.root_path.as_deref(), &path) {
+        let Some(root_path) = self.workspace_root_for_path(&path) else {
+            return;
+        };
+        if !is_lsp_path(&self.settings, Some(&root_path), &path) {
             return;
         }
         let lang = LanguageId::from_path(&path);
@@ -3885,32 +3957,25 @@ impl BlueIdeApp {
                 correlation_id,
             )
         } else {
-            if let Some(ref root_path) = self.tree.root_path {
-                self.lsp_manager.request_goto_definition(
-                    &path,
-                    lsp_position.line,
-                    lsp_position.utf16_col,
-                    correlation_id,
-                    &self.settings,
-                    root_path,
-                )
-            } else {
-                false
-            }
-        };
-        #[cfg(not(test))]
-        let sent = if let Some(ref root_path) = self.tree.root_path {
             self.lsp_manager.request_goto_definition(
                 &path,
                 lsp_position.line,
                 lsp_position.utf16_col,
                 correlation_id,
                 &self.settings,
-                root_path,
+                &root_path,
             )
-        } else {
-            false
         };
+        #[cfg(not(test))]
+        let sent =
+            self.lsp_manager.request_goto_definition(
+                &path,
+                lsp_position.line,
+                lsp_position.utf16_col,
+                correlation_id,
+                &self.settings,
+                &root_path,
+            );
         if !sent {
             self.lsp_pending.remove(&correlation_id);
             self.pending_definitions.remove(&correlation_id);
@@ -3981,6 +4046,11 @@ impl BlueIdeApp {
                 crate::vim::ExCommand::Quit => {
                     if let Some(path) = self.active.clone() {
                         self.request_close_file(&path);
+                    }
+                }
+                crate::vim::ExCommand::ForceClose => {
+                    if let Some(path) = self.active.clone() {
+                        self.request_close_file_force(&path);
                     }
                 }
                 crate::vim::ExCommand::WriteQuit => {
@@ -4358,8 +4428,12 @@ impl BlueIdeApp {
             self.dismiss_lsp_hover();
             return;
         };
+        let Some(root_path) = self.workspace_root_for_path(&path) else {
+            self.dismiss_lsp_hover();
+            return;
+        };
 
-        if !is_lsp_path(&self.settings, self.tree.root_path.as_deref(), &path) {
+        if !is_lsp_path(&self.settings, Some(&root_path), &path) {
             self.dismiss_lsp_hover();
             return;
         }
@@ -4445,32 +4519,24 @@ impl BlueIdeApp {
                 let sent = if let Some(ref mut lsp) = self.lsp {
                     lsp.request_hover(&path, lsp_position.line, lsp_position.utf16_col, id)
                 } else {
-                    let root_path = self.tree.root_path.as_deref();
-                    root_path.is_some_and(|root| {
-                        self.lsp_manager.request_hover(
-                            &path,
-                            lsp_position.line,
-                            lsp_position.utf16_col,
-                            id,
-                            &self.settings,
-                            root,
-                        )
-                    })
+                    self.lsp_manager.request_hover(
+                        &path,
+                        lsp_position.line,
+                        lsp_position.utf16_col,
+                        id,
+                        &self.settings,
+                        &root_path,
+                    )
                 };
                 #[cfg(not(test))]
-                let sent = {
-                    let root_path = self.tree.root_path.as_deref();
-                    root_path.is_some_and(|root| {
-                        self.lsp_manager.request_hover(
-                            &path,
-                            lsp_position.line,
-                            lsp_position.utf16_col,
-                            id,
-                            &self.settings,
-                            root,
-                        )
-                    })
-                };
+                let sent = self.lsp_manager.request_hover(
+                    &path,
+                    lsp_position.line,
+                    lsp_position.utf16_col,
+                    id,
+                    &self.settings,
+                    &root_path,
+                );
                 if sent {
                     self.lsp_hover.request_sent_for = Some(target);
                 } else {
@@ -4533,19 +4599,6 @@ impl BlueIdeApp {
                 }
             }
         }
-    }
-
-    #[allow(dead_code)]
-    fn save_active(&mut self) -> io::Result<()> {
-        let path = self
-            .active
-            .clone()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no active file"))?;
-        let buffer = self
-            .buffers
-            .get_mut(&path)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "active buffer is missing"))?;
-        buffer.save_to_file(&path)
     }
 
     fn try_save_active(&mut self) {
@@ -5704,12 +5757,14 @@ impl BlueIdeApp {
     // ─── Signature help ───────────────────────────────────────────────────────
 
     /// Request signature help at the current cursor position.
-    #[allow(dead_code)]
     fn request_signature_help_at_cursor(&mut self) {
         let Some(path) = self.active.clone() else {
             return;
         };
-        if !is_lsp_path(&self.settings, self.tree.root_path.as_deref(), &path) {
+        let Some(root) = self.workspace_root_for_path(&path) else {
+            return;
+        };
+        if !is_lsp_path(&self.settings, Some(&root), &path) {
             return;
         }
         let Some(buffer) = self.buffers.get(&path) else {
@@ -5723,9 +5778,6 @@ impl BlueIdeApp {
             return;
         }
         let lsp_pos = buffer.cursor_lsp_position();
-        let Some(root) = self.tree.root_path.clone() else {
-            return;
-        };
         if !self.ensure_lsp_document_synced(&path) {
             return;
         }
@@ -5803,7 +5855,10 @@ impl BlueIdeApp {
         let Some(path) = self.active.clone() else {
             return;
         };
-        if !is_lsp_path(&self.settings, self.tree.root_path.as_deref(), &path) {
+        let Some(root) = self.workspace_root_for_path(&path) else {
+            return;
+        };
+        if !is_lsp_path(&self.settings, Some(&root), &path) {
             return;
         }
         let Some(buffer) = self.buffers.get(&path) else {
@@ -5817,9 +5872,6 @@ impl BlueIdeApp {
             lsp_pos.line,
             lsp_pos.utf16_col,
         );
-        let Some(root) = self.tree.root_path.clone() else {
-            return;
-        };
         if !self.ensure_lsp_document_synced(&path) {
             return;
         }
@@ -6744,12 +6796,19 @@ impl BlueIdeApp {
                 });
 
                 if let Some(shell) = spawn_shell {
-                    let cwd = self.tree.root_path.clone();
-                    let env = self.env_editor.enabled_vars();
-                    self.term_sessions.create_session(cwd, shell, &env);
-                    self.term_split.clamp_indices(self.term_sessions.len());
-                    self.bottom_panel_tab = BottomPanelTab::Terminal;
-                    self.show_problems = false;
+                    if !self.trust_allows(crate::workspace::ExecutableCapability::Terminal) {
+                        self.error_message = Some(
+                            "Terminals require a trusted workspace. Click the trust badge to enable."
+                                .to_owned(),
+                        );
+                    } else {
+                        let cwd = self.primary_workspace_root();
+                        let env = self.env_editor.enabled_vars();
+                        self.term_sessions.create_session(cwd, shell, &env);
+                        self.term_split.clamp_indices(self.term_sessions.len());
+                        self.bottom_panel_tab = BottomPanelTab::Terminal;
+                        self.show_problems = false;
+                    }
                 }
 
                 if kill_active_terminal {
@@ -6830,7 +6889,7 @@ impl BlueIdeApp {
                     BottomPanelTab::Terminal => {
                         // ── Feature 1: Ensure sessions exist ───────────────
                         let env_vars = self.env_editor.enabled_vars();
-                        let cwd_ref = self.tree.root_path.clone();
+                        let cwd_ref = self.primary_workspace_root();
                         self.term_sessions.ensure_session(cwd_ref.clone(), &env_vars);
 
                         // Poll all sessions every frame
@@ -6864,14 +6923,21 @@ impl BlueIdeApp {
                                 self.term_split.clamp_indices(self.term_sessions.len());
                             }
                             Some(TabBarAction::New) => {
-                                let env = self.env_editor.enabled_vars();
-                                self.term_sessions.create_session(
-                                    cwd_ref.clone(),
-                                    crate::terminal::ShellKind::default_shell(),
-                                    &env,
-                                );
-                                let n = self.term_sessions.len();
-                                self.term_split.clamp_indices(n);
+                                if !self.trust_allows(crate::workspace::ExecutableCapability::Terminal) {
+                                    self.error_message = Some(
+                                        "Terminals require a trusted workspace. Click the trust badge to enable."
+                                            .to_owned(),
+                                    );
+                                } else {
+                                    let env = self.env_editor.enabled_vars();
+                                    self.term_sessions.create_session(
+                                        cwd_ref.clone(),
+                                        crate::terminal::ShellKind::default_shell(),
+                                        &env,
+                                    );
+                                    let n = self.term_sessions.len();
+                                    self.term_split.clamp_indices(n);
+                                }
                             }
                             None => {}
                         }
@@ -7053,12 +7119,23 @@ impl BlueIdeApp {
                     }
                     BottomPanelTab::Profiler => {
                         let palette = self.active_palette.semantic;
-                        let root_path = self.tree.root_path.as_ref();
+                        let root_path = self.primary_workspace_root();
+                        let trusted =
+                            self.trust_allows(crate::workspace::ExecutableCapability::Profiler);
+                        if !trusted {
+                            ui.label(
+                                RichText::new(
+                                    "Profiling requires a trusted workspace. Click the trust badge to enable.",
+                                )
+                                .color(palette.warning),
+                            );
+                        }
                         if let Some(jump_path) = crate::profiler::render_profiler_panel(
                             ui,
                             &mut self.profiler_state,
-                            root_path,
+                            root_path.as_ref(),
                             palette,
+                            trusted,
                         ) {
                             if let Err(_e) = self.open_file(jump_path) {
                                 // Ignore error
@@ -7532,463 +7609,6 @@ impl BlueIdeApp {
         }
     }
 
-    #[allow(dead_code)]
-    fn show_outline_panel(&mut self, context: &egui::Context) {
-        if !self.outline_panel.show {
-            return;
-        }
-
-        let modal_open = self.has_modal();
-        let palette = self.active_palette;
-        let mut clicked_symbol_line = None;
-        let mut toggle_symbol_path: Option<(Vec<usize>, bool)> = None;
-
-        #[derive(Clone)]
-        struct VisibleOutlineNode {
-            path: Vec<usize>,
-            name: String,
-            kind: crate::lsp::types::SymbolKind,
-            line: usize,
-            depth: usize,
-            parent_path: Option<String>,
-            has_children: bool,
-            expanded: bool,
-        }
-
-        // 1. Gather all visible nodes (taking filter and expanded states into account)
-        let mut visible_nodes = Vec::new();
-
-        if let Some(ref path) = self.active {
-            if let Some(nodes) = self.outline_panel.nodes.get(path) {
-                if self.outline_panel.filter.is_empty() {
-                    fn collect_visible(
-                        nodes: &[crate::lsp::types::OutlineNode],
-                        depth: usize,
-                        path_prefix: &mut Vec<usize>,
-                        out: &mut Vec<VisibleOutlineNode>,
-                    ) {
-                        for (index, node) in nodes.iter().enumerate() {
-                            path_prefix.push(index);
-                            out.push(VisibleOutlineNode {
-                                path: path_prefix.clone(),
-                                name: node.name.clone(),
-                                kind: node.kind,
-                                line: node.line,
-                                depth,
-                                parent_path: None,
-                                has_children: !node.children.is_empty(),
-                                expanded: node.expanded,
-                            });
-                            if node.expanded && !node.children.is_empty() {
-                                collect_visible(&node.children, depth + 1, path_prefix, out);
-                            }
-                            path_prefix.pop();
-                        }
-                    }
-                    collect_visible(nodes, 0, &mut Vec::new(), &mut visible_nodes);
-                } else {
-                    fn collect_filtered(
-                        nodes: &[crate::lsp::types::OutlineNode],
-                        filter: &str,
-                        parent_path: Option<&str>,
-                        path_prefix: &mut Vec<usize>,
-                        out: &mut Vec<VisibleOutlineNode>,
-                    ) {
-                        for (index, node) in nodes.iter().enumerate() {
-                            path_prefix.push(index);
-                            let full_path = if let Some(p) = parent_path {
-                                format!("{} > {}", p, node.name)
-                            } else {
-                                node.name.clone()
-                            };
-                            if node.name.to_lowercase().contains(filter) {
-                                out.push(VisibleOutlineNode {
-                                    path: path_prefix.clone(),
-                                    name: node.name.clone(),
-                                    kind: node.kind,
-                                    line: node.line,
-                                    depth: 0,
-                                    parent_path: parent_path.map(|p| p.to_owned()),
-                                    has_children: !node.children.is_empty(),
-                                    expanded: node.expanded,
-                                });
-                            }
-                            collect_filtered(
-                                &node.children,
-                                filter,
-                                Some(&full_path),
-                                path_prefix,
-                                out,
-                            );
-                            path_prefix.pop();
-                        }
-                    }
-                    let filter_lower = self.outline_panel.filter.to_lowercase();
-                    collect_filtered(
-                        nodes,
-                        &filter_lower,
-                        None,
-                        &mut Vec::new(),
-                        &mut visible_nodes,
-                    );
-                }
-            }
-        }
-
-        // 2. Render right panel
-        let width = self.outline_panel.width;
-        let panel_response = egui::SidePanel::right("outline_panel")
-            .resizable(true)
-            .width_range(140.0..=400.0)
-            .default_width(width)
-            .show(context, |ui| {
-                ui.set_enabled(!modal_open);
-
-                // Header
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("OUTLINE").strong().size(11.0));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("×").clicked() {
-                            self.outline_panel.show = false;
-                        }
-                    });
-                });
-                ui.add_space(4.0);
-
-                // Filter
-                let filter_response = ui.add(
-                    egui::TextEdit::singleline(&mut self.outline_panel.filter)
-                        .hint_text("Filter symbols…")
-                        .desired_width(ui.available_width()),
-                );
-
-                ui.add_space(4.0);
-                ui.separator();
-                ui.add_space(2.0);
-
-                // Handle focus check:
-                let outline_id = ui.id().with("outline_tree_area");
-                let is_panel_focused =
-                    ui.memory(|mem| mem.has_focus(outline_id)) || filter_response.has_focus();
-
-                // Process Keyboard Input
-                let mut key_event = None;
-                if is_panel_focused {
-                    ui.input_mut(|i| {
-                        if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowDown) {
-                            key_event = Some(egui::Key::ArrowDown);
-                        } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowUp) {
-                            key_event = Some(egui::Key::ArrowUp);
-                        } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
-                            key_event = Some(egui::Key::Enter);
-                        } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Space) {
-                            key_event = Some(egui::Key::Space);
-                        } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowLeft) {
-                            key_event = Some(egui::Key::ArrowLeft);
-                        } else if i.consume_key(egui::Modifiers::NONE, egui::Key::ArrowRight) {
-                            key_event = Some(egui::Key::ArrowRight);
-                        } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
-                            key_event = Some(egui::Key::Escape);
-                        }
-                    });
-                }
-
-                // Process key events
-                match key_event {
-                    Some(egui::Key::Escape) => {
-                        if !self.outline_panel.filter.is_empty() {
-                            self.outline_panel.filter.clear();
-                        } else {
-                            if let Some(ref path) = self.active {
-                                if let Some(state) = self.editor_states.get_mut(path) {
-                                    state.request_focus();
-                                }
-                            }
-                        }
-                    }
-                    Some(egui::Key::ArrowDown) => {
-                        let len = visible_nodes.len();
-                        if len > 0 {
-                            let current =
-                                self.outline_panel.selected_row_index.unwrap_or(usize::MAX);
-                            let next = if current == usize::MAX {
-                                0
-                            } else {
-                                (current + 1).min(len - 1)
-                            };
-                            self.outline_panel.selected_row_index = Some(next);
-                            self.outline_panel.needs_scroll_to_selected = true;
-                        }
-                    }
-                    Some(egui::Key::ArrowUp) => {
-                        let len = visible_nodes.len();
-                        if len > 0 {
-                            let current = self.outline_panel.selected_row_index.unwrap_or(0);
-                            let next = current.saturating_sub(1);
-                            self.outline_panel.selected_row_index = Some(next);
-                            self.outline_panel.needs_scroll_to_selected = true;
-                        }
-                    }
-                    Some(egui::Key::Enter) | Some(egui::Key::Space) => {
-                        if let Some(idx) = self.outline_panel.selected_row_index {
-                            if idx < visible_nodes.len() {
-                                clicked_symbol_line = Some(visible_nodes[idx].line);
-                            }
-                        }
-                    }
-                    Some(egui::Key::ArrowLeft) => {
-                        if self.outline_panel.filter.is_empty() {
-                            if let Some(idx) = self.outline_panel.selected_row_index {
-                                if idx < visible_nodes.len() {
-                                    toggle_symbol_path =
-                                        Some((visible_nodes[idx].path.clone(), false));
-                                }
-                            }
-                        }
-                    }
-                    Some(egui::Key::ArrowRight) => {
-                        if self.outline_panel.filter.is_empty() {
-                            if let Some(idx) = self.outline_panel.selected_row_index {
-                                if idx < visible_nodes.len() {
-                                    toggle_symbol_path =
-                                        Some((visible_nodes[idx].path.clone(), true));
-                                }
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-
-                // Check empty states
-                if self.active.is_none() {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("No file open");
-                    });
-                    return;
-                }
-
-                let path = self.active.clone().unwrap();
-                let lang = crate::language::LanguageId::from_path(&path);
-                let Some(server_id) = lang.server_id() else {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("LSP not connected");
-                    });
-                    return;
-                };
-
-                let lsp_running = {
-                    #[cfg(test)]
-                    {
-                        if let Some(ref client) = self.lsp {
-                            client.is_running()
-                        } else {
-                            self.lsp_manager.is_running(server_id)
-                        }
-                    }
-                    #[cfg(not(test))]
-                    {
-                        self.lsp_manager.is_running(server_id)
-                    }
-                };
-
-                if !lsp_running {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("LSP not connected");
-                    });
-                    return;
-                }
-
-                if self.outline_panel.pending_request.as_ref() == Some(&path) {
-                    ui.centered_and_justified(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label("Loading symbols…");
-                        });
-                    });
-                    return;
-                }
-
-                if !self.outline_panel.nodes.contains_key(&path) {
-                    // Send request if not cached and not pending:
-                    let root = self.tree.root_path.clone().unwrap_or_default();
-                    let sent = {
-                        #[cfg(test)]
-                        {
-                            if let Some(ref client) = self.lsp {
-                                client.request_document_symbol(&path, self.ui_correlation_id)
-                            } else {
-                                self.lsp_manager.request_document_symbol(
-                                    &path,
-                                    self.ui_correlation_id,
-                                    &self.settings,
-                                    &root,
-                                )
-                            }
-                        }
-                        #[cfg(not(test))]
-                        {
-                            self.lsp_manager.request_document_symbol(
-                                &path,
-                                self.ui_correlation_id,
-                                &self.settings,
-                                &root,
-                            )
-                        }
-                    };
-                    if sent {
-                        self.lsp_pending
-                            .insert(self.ui_correlation_id, LspPendingKind::DocumentSymbol);
-                        self.ui_correlation_id += 1;
-                        self.outline_panel.pending_request = Some(path.clone());
-                    }
-                    ui.centered_and_justified(|ui| {
-                        ui.horizontal(|ui| {
-                            ui.spinner();
-                            ui.label("Loading symbols…");
-                        });
-                    });
-                    return;
-                }
-
-                let nodes_ref = self.outline_panel.nodes.get(&path).unwrap();
-                if nodes_ref.is_empty() {
-                    ui.centered_and_justified(|ui| {
-                        ui.label("No symbols found");
-                    });
-                    return;
-                }
-
-                if !self.outline_panel.filter.is_empty() && visible_nodes.is_empty() {
-                    ui.centered_and_justified(|ui| {
-                        ui.label(format!("No matches for '{}'", self.outline_panel.filter));
-                    });
-                    return;
-                }
-
-                // Render tree list
-                let tree_area_rect = ui.available_rect_before_wrap();
-                let tree_area_response =
-                    ui.interact(tree_area_rect, outline_id, egui::Sense::click());
-                if tree_area_response.clicked() {
-                    ui.memory_mut(|mem| mem.request_focus(outline_id));
-                }
-
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        for (idx, node) in visible_nodes.iter().enumerate() {
-                            let is_highlighted =
-                                self.outline_panel.current_symbol_line == Some(node.line);
-                            let is_selected = self.outline_panel.selected_row_index == Some(idx);
-
-                            // Background layout frame
-                            let mut frame =
-                                egui::Frame::none().inner_margin(egui::Margin::symmetric(4.0, 2.0));
-                            if is_selected && ui.memory(|m| m.has_focus(outline_id)) {
-                                frame = frame.fill(palette.semantic.selection);
-                            } else if is_highlighted {
-                                frame = frame.fill(palette.semantic.current_line);
-                            }
-
-                            let row_response = frame.show(ui, |ui| {
-                                ui.horizontal(|ui| {
-                                    // Indent space
-                                    ui.add_space(node.depth as f32 * 16.0);
-
-                                    // ▶/▼ Expand Collapse
-                                    if node.has_children && self.outline_panel.filter.is_empty() {
-                                        let toggle_char = if node.expanded { "▼" } else { "▶" };
-                                        let toggle_resp = ui.add(
-                                            egui::Label::new(
-                                                egui::RichText::new(toggle_char).size(9.0),
-                                            )
-                                            .sense(egui::Sense::click()),
-                                        );
-                                        if toggle_resp.clicked() {
-                                            toggle_symbol_path =
-                                                Some((node.path.clone(), !node.expanded));
-                                        }
-                                    } else if self.outline_panel.filter.is_empty() {
-                                        ui.add_space(10.0);
-                                    }
-
-                                    // Symbol Kind colored label
-                                    let icon = node.kind.icon_text();
-                                    let color = node.kind.icon_color(&palette);
-                                    ui.colored_label(color, icon);
-
-                                    // Parent Path dimmed prefix if filtered
-                                    if let Some(ref prefix) = node.parent_path {
-                                        ui.colored_label(
-                                            palette.semantic.muted_text,
-                                            format!("{} > ", prefix),
-                                        );
-                                    }
-
-                                    // Symbol Name
-                                    let text_style = if is_highlighted {
-                                        egui::RichText::new(&node.name).strong()
-                                    } else {
-                                        egui::RichText::new(&node.name)
-                                    };
-                                    let name_label = ui.add(
-                                        egui::Label::new(text_style).sense(egui::Sense::click()),
-                                    );
-                                    if name_label.clicked() {
-                                        clicked_symbol_line = Some(node.line);
-                                        self.outline_panel.selected_row_index = Some(idx);
-                                    }
-                                });
-                            });
-
-                            // Scroll handling
-                            if is_highlighted && self.outline_panel.needs_scroll_to_symbol {
-                                row_response
-                                    .response
-                                    .scroll_to_me(Some(egui::Align::Center));
-                                self.outline_panel.needs_scroll_to_symbol = false;
-                            }
-                            if is_selected && self.outline_panel.needs_scroll_to_selected {
-                                row_response
-                                    .response
-                                    .scroll_to_me(Some(egui::Align::Center));
-                                self.outline_panel.needs_scroll_to_selected = false;
-                            }
-                        }
-                    });
-            });
-
-        // Update width
-        self.outline_panel.width = panel_response.response.rect.width();
-
-        if let Some((path_to_symbol, expanded)) = toggle_symbol_path {
-            if let Some(active_path) = self.active.clone() {
-                if let Some(nodes) = self.outline_panel.nodes.get_mut(&active_path) {
-                    if let Some(node) = outline_node_mut_by_path(nodes, &path_to_symbol) {
-                        node.expanded = expanded;
-                    }
-                }
-            }
-        }
-
-        // Handle Jump
-        if let Some(line) = clicked_symbol_line {
-            let active_path = self.active.clone().unwrap();
-            if let Some(buf) = self.buffers.get_mut(&active_path) {
-                while let Some(range) = buf.fold_state.collapsed_containing(line) {
-                    let start_line = range.start_line;
-                    buf.fold_state.collapsed.remove(&start_line);
-                }
-                buf.set_cursor(crate::editor::buffer::CursorPosition { line, col: 0 });
-            }
-            if let Some(state) = self.editor_states.get_mut(&active_path) {
-                state.request_scroll_to_cursor();
-                // Return focus to the editor (and keep focus there on click jump)
-                state.request_focus();
-            }
-        }
-    }
 }
 
 fn get_group_color(groups: &[TabGroup], name: &str) -> egui::Color32 {
@@ -8338,7 +7958,7 @@ impl BlueIdeApp {
                 buffer.position_to_char_index(start),
                 buffer.position_to_char_index(end),
             ) {
-                Some(buffer.text()[start..end].to_owned())
+                buffer.char_range_to_string(start..end.saturating_add(1))
             } else {
                 None
             }
@@ -8585,6 +8205,7 @@ impl BlueIdeApp {
                 ref mut image_viewer_states,
                 ref mut markdown_preview_states,
                 ref mut diff_viewer_states,
+                ref workspace,
                 zen: _,
                 ..
             } = *self;
@@ -9131,8 +8752,16 @@ impl BlueIdeApp {
                             } else if let (Some(buffer), Some(state)) =
                                 (buffers.get_mut(path), editor_states.get_mut(path))
                             {
-                                let lsp_active =
-                                    is_lsp_path(settings, tree.root_path.as_deref(), path) && {
+                                // Single-file (non-workspace) open falls back to
+                                // the file tree root until a Workspace is added.
+                                let active_root = workspace
+                                    .owner_of(path)
+                                    .map(|root| root.path.clone())
+                                    .or_else(|| tree.root_path.clone());
+                                let lsp_active = active_root
+                                    .as_deref()
+                                    .is_some_and(|root| is_lsp_path(settings, Some(root), path))
+                                    && {
                                         #[cfg(test)]
                                         {
                                             lsp.as_ref().map_or_else(
@@ -10165,7 +9794,8 @@ impl BlueIdeApp {
     fn open_quick_open(&mut self, context: &egui::Context) {
         self.on_modal_opened();
         let roots = if self.workspace.roots().is_empty() {
-            self.tree.root_path.clone().map_or(vec![], |p| vec![p])
+            self.primary_workspace_root()
+                .map_or(vec![], |root| vec![root])
         } else {
             self.workspace
                 .roots()
@@ -10227,12 +9857,16 @@ impl BlueIdeApp {
                 }
                 None => (String::new(), 0, 0, "unknown".to_string()),
             };
+        let workspace_root = active_file
+            .as_ref()
+            .and_then(|path| self.workspace_root_for_path(path))
+            .or_else(|| self.primary_workspace_root());
         PluginApiContext {
             active_file,
             buffer_content,
             cursor_line,
             cursor_col,
-            workspace_root: self.tree.root_path.clone(),
+            workspace_root,
             language,
         }
     }
@@ -10407,7 +10041,14 @@ impl BlueIdeApp {
                 self.workspace_symbol.open();
             }
             CommandId::NewTerminal => {
-                let cwd = self.tree.root_path.clone();
+                if !self.trust_allows(crate::workspace::ExecutableCapability::Terminal) {
+                    self.error_message = Some(
+                        "Terminals require a trusted workspace. Click the trust badge to enable."
+                            .to_owned(),
+                    );
+                    return;
+                }
+                let cwd = self.primary_workspace_root();
                 let env = self.env_editor.enabled_vars();
                 self.term_sessions
                     .create_session(cwd, crate::terminal::ShellKind::default_shell(), &env);
@@ -10417,7 +10058,7 @@ impl BlueIdeApp {
                 self.show_problems = false;
             }
             CommandId::EditEnvVars => {
-                if let Some(root) = self.tree.root_path.clone() {
+                if let Some(root) = self.primary_workspace_root() {
                     self.env_editor.open_for(root);
                 } else {
                     eprintln!("[env_editor] No project root open");
@@ -10526,7 +10167,14 @@ impl BlueIdeApp {
                 self.run_task(&name.clone());
             }
             CommandId::RerunLastTask => {
-                if let Some(root) = self.tree.root_path.clone() {
+                if !self.trust_allows(crate::workspace::ExecutableCapability::Command) {
+                    self.error_message = Some(
+                        "Tasks require a trusted workspace. Click the trust badge to enable."
+                            .to_owned(),
+                    );
+                    return;
+                }
+                if let Some(root) = self.primary_workspace_root() {
                     self.task_panel.rerun_last(&root);
                     self.show_bottom_panel = true;
                     self.bottom_panel_tab = BottomPanelTab::Output;
@@ -10536,6 +10184,13 @@ impl BlueIdeApp {
                 self.task_panel.cancel();
             }
             CommandId::ReloadPlugins => {
+                if !self.trust_allows(crate::workspace::ExecutableCapability::Plugin) {
+                    self.error_message = Some(
+                        "Plugins require a trusted workspace. Click the trust badge to enable."
+                            .to_owned(),
+                    );
+                    return;
+                }
                 self.plugin_system.reload_all();
                 self.drain_plugin_actions();
                 let count = self.plugin_system.plugin_count();
@@ -10821,21 +10476,46 @@ impl eframe::App for BlueIdeApp {
                     }
                 }
             }
+
+            // Unlock (or re-lock) executable capabilities as soon as the user
+            // decides. LSP/plugins are started lazily here so an untrusted
+            // folder is never auto-spawned at open time.
+            if state == crate::workspace::TrustState::Trusted {
+                self.lsp_manager.mark_root_trusted(&path);
+                self.start_lsp(path.clone());
+                let plugin_dir = path.join(".blue").join("plugins");
+                self.plugin_system.reload_all();
+                self.plugin_system.load_all(&plugin_dir);
+                self.drain_plugin_actions();
+            } else {
+                self.lsp_manager.revoke_all();
+            }
         }
 
         // ── Trust management popup ────────────────────────────────────────────
         if self.trust_management_open {
-            if let (Some(trust_store), Some(ws_root)) = (
-                self.trust_store.as_mut(),
-                self.workspace.roots().first().cloned(),
-            ) {
-                crate::trust_ui::show_trust_management(
-                    context,
-                    &ws_root,
-                    trust_store,
-                    self.active_palette.semantic,
-                    &mut self.trust_management_open,
-                );
+            let ws_root = self.workspace.roots().first().cloned();
+            if let Some(trust_store) = self.trust_store.as_mut() {
+                if let Some(root) = &ws_root {
+                    crate::trust_ui::show_trust_management(
+                        context,
+                        root,
+                        trust_store,
+                        self.active_palette.semantic,
+                        &mut self.trust_management_open,
+                    );
+                }
+            }
+
+            // Reconcile executable capabilities after the management popup may
+            // have changed the trust state.
+            if let (Some(root), Some(ts)) = (ws_root.as_ref(), self.trust_store.as_ref()) {
+                if ts.permits(root, crate::workspace::ExecutableCapability::Plugin) {
+                    self.lsp_manager.mark_root_trusted(&root.path);
+                    self.start_lsp(root.path.clone());
+                } else {
+                    self.lsp_manager.revoke_all();
+                }
             }
         }
 
@@ -10987,7 +10667,7 @@ fn collect_terminal_lines(
     lines
 }
 
-/// Key handler for terminal sessions (replicates `handle_terminal_key`).
+/// Key handler for terminal sessions.
 fn handle_terminal_key_session(
     term: &mut crate::terminal::TerminalPane,
     key: egui::Key,
@@ -11023,63 +10703,6 @@ fn handle_terminal_key_session(
         _ => return,
     };
     term.write(bytes);
-}
-
-#[allow(dead_code)]
-fn handle_terminal_key(
-    term: &mut crate::terminal::TerminalPane,
-    key: egui::Key,
-    mods: egui::Modifiers,
-) {
-    let bytes: &[u8] = match key {
-        egui::Key::Enter => b"\r",
-        egui::Key::Backspace => b"\x7f",
-        egui::Key::Tab => b"\t",
-        egui::Key::Escape => b"\x1b",
-        egui::Key::ArrowUp => b"\x1b[A",
-        egui::Key::ArrowDown => b"\x1b[B",
-        egui::Key::ArrowRight => b"\x1b[C",
-        egui::Key::ArrowLeft => b"\x1b[D",
-        egui::Key::Home => b"\x1b[H",
-        egui::Key::End => b"\x1b[F",
-        egui::Key::PageUp => b"\x1b[5~",
-        egui::Key::PageDown => b"\x1b[6~",
-        egui::Key::Delete => b"\x1b[3~",
-        _ => return,
-    };
-    if mods.ctrl {
-        if let egui::Key::C = key {
-            term.write(b"\x03");
-            return;
-        }
-        if let egui::Key::D = key {
-            term.write(b"\x04");
-            return;
-        }
-        if let egui::Key::L = key {
-            term.write(b"\x0c");
-            return;
-        }
-        if let egui::Key::Z = key {
-            term.write(b"\x1a");
-            return;
-        }
-    }
-    term.write(bytes);
-}
-
-#[allow(dead_code)]
-fn outline_node_mut_by_path<'a>(
-    nodes: &'a mut [crate::lsp::types::OutlineNode],
-    path: &[usize],
-) -> Option<&'a mut crate::lsp::types::OutlineNode> {
-    let (&index, rest) = path.split_first()?;
-    let node = nodes.get_mut(index)?;
-    if rest.is_empty() {
-        Some(node)
-    } else {
-        outline_node_mut_by_path(&mut node.children, rest)
-    }
 }
 
 fn is_lsp_path(settings: &Settings, root: Option<&Path>, path: &Path) -> bool {
@@ -11373,7 +10996,7 @@ impl BlueIdeApp {
             parent_uri: String::new(),
             parent_range: None,
         });
-        let Some(root) = self.tree.root_path.clone() else { return; };
+        let Some(root) = self.workspace_root_for_path(&path) else { return; };
         self.lsp_manager.request_prepare_call_hierarchy(&path, cursor.line as u32, cursor.col as u32, id, &self.settings, &root);
     }
 
@@ -11387,7 +11010,7 @@ impl BlueIdeApp {
             parent_uri: String::new(),
             parent_range: None,
         });
-        let Some(root) = self.tree.root_path.clone() else { return; };
+        let Some(root) = self.workspace_root_for_path(&path) else { return; };
         self.lsp_manager.request_prepare_type_hierarchy(&path, cursor.line as u32, cursor.col as u32, id, &self.settings, &root);
     }
 
@@ -11406,7 +11029,7 @@ impl BlueIdeApp {
                     parent_uri: item.uri().to_string(),
                     parent_range: Some(item.range()),
                 });
-                let Some(root) = self.tree.root_path.clone() else { return; };
+                let Some(root) = self.workspace_root_for_path(&path) else { return; };
                 if let HierarchyItem::Call(call_item) = item {
                     match dir {
                         HierarchyDirection::Incoming => {
@@ -11424,7 +11047,7 @@ impl BlueIdeApp {
                     parent_uri: item.uri().to_string(),
                     parent_range: Some(item.range()),
                 });
-                let Some(root) = self.tree.root_path.clone() else { return; };
+                let Some(root) = self.workspace_root_for_path(&path) else { return; };
                 if let HierarchyItem::Type(type_item) = item {
                     match dir {
                         TypeDirection::Supertypes => {
@@ -11482,17 +11105,19 @@ impl BlueIdeApp {
             return;
         };
 
-        // Security: require trusted workspace before running code
-        if let Some(trust_store) = &self.trust_store {
-            if let Some(ws_root) = self.workspace.roots().first() {
-                if !trust_store.permits(ws_root, crate::workspace::ExecutableCapability::Command) {
-                    self.error_message = Some(
-                        "Tasks require a trusted workspace. Click the trust badge to enable."
-                            .to_owned(),
-                    );
-                    return;
-                }
-            }
+        // Security: require trusted workspace before running code.
+        // Fail closed: an absent/unloaded trust store must NOT permit execution.
+        if !self
+            .trust_store
+            .as_ref()
+            .and_then(|ts| self.workspace.roots().first().map(|r| ts.permits(r, crate::workspace::ExecutableCapability::Command)))
+            .unwrap_or(false)
+        {
+            self.error_message = Some(
+                "Tasks require a trusted workspace. Click the trust badge to enable."
+                    .to_owned(),
+            );
+            return;
         }
 
         // Clear previous output
@@ -11604,14 +11229,65 @@ mod tests {
         });
     }
 
-    fn test_file(name: &str, contents: &str) -> std::path::PathBuf {
+    fn test_dir(name: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!("blue_ide_{unique}_{name}"));
-        fs::write(&path, contents).unwrap();
-        path
+        let dir = std::env::temp_dir().join(format!("blue_ide_{unique}_{name}"));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn trust_store_for(root: &crate::workspace::WorkspaceRoot, trust: crate::workspace::TrustState) -> (
+        crate::workspace::TrustStore,
+        std::path::PathBuf,
+    ) {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("blue_ide_{unique}_trust.json"));
+        let mut store = crate::workspace::TrustStore::load(&path).unwrap();
+        store.set(root, trust).unwrap();
+        (store, path)
+    }
+
+    /// Build an app with a single trusted workspace root. Returns the app, the
+    /// on-disk root dir, the trust-store path, and the workspace root.
+    fn trusted_workspace_app(
+        name: &str,
+    ) -> (
+        BlueIdeApp,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        crate::workspace::WorkspaceRoot,
+    ) {
+        let dir = test_dir(name);
+        let mut app = BlueIdeApp::empty();
+        let id = app.workspace.add_root(&dir).unwrap();
+        let root = app.workspace.root(id).unwrap().clone();
+        let (store, store_path) = trust_store_for(&root, crate::workspace::TrustState::Trusted);
+        app.trust_store = Some(store);
+        (app, dir, store_path, root)
+    }
+
+    /// Build an app with a single untrusted workspace root.
+    fn untrusted_workspace_app(
+        name: &str,
+    ) -> (
+        BlueIdeApp,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        crate::workspace::WorkspaceRoot,
+    ) {
+        let dir = test_dir(name);
+        let mut app = BlueIdeApp::empty();
+        let id = app.workspace.add_root(&dir).unwrap();
+        let root = app.workspace.root(id).unwrap().clone();
+        let (store, store_path) = trust_store_for(&root, crate::workspace::TrustState::Untrusted);
+        app.trust_store = Some(store);
+        (app, dir, store_path, root)
     }
 
     fn settings_app(path: std::path::PathBuf) -> BlueIdeApp {
@@ -12026,7 +11702,7 @@ mod tests {
 
     #[test]
     fn menu_run_command_creates_and_reveals_a_terminal() {
-        let mut app = BlueIdeApp::empty();
+        let (mut app, _root_dir, _store_path, _root) = trusted_workspace_app("menu_terminal");
         let context = egui::Context::default();
         let terminal_count = app.term_sessions.len();
         app.show_bottom_panel = false;
@@ -12036,6 +11712,64 @@ mod tests {
         assert_eq!(app.term_sessions.len(), terminal_count + 1);
         assert!(app.show_bottom_panel);
         assert_eq!(app.bottom_panel_tab, super::BottomPanelTab::Terminal);
+    }
+
+    #[test]
+    fn run_task_blocks_when_trust_store_is_absent() {
+        let dir = test_dir("run_task_no_store");
+        let mut app = BlueIdeApp::empty();
+        app.workspace.add_root(&dir).unwrap();
+        app.trust_store = None;
+
+        app.run_task("build");
+
+        assert!(
+            app.error_message.as_deref().unwrap_or("")
+                .contains("trusted workspace"),
+            "unexpected error: {:?}",
+            app.error_message
+        );
+        assert!(!app.show_bottom_panel);
+    }
+
+    #[test]
+    fn run_task_is_allowed_after_root_is_trusted() {
+        let (mut app, _dir, _store_path, _root) = trusted_workspace_app("run_task_trusted");
+        app.show_bottom_panel = false;
+
+        app.run_task("build");
+
+        assert!(app.error_message.is_none());
+        // The task itself is absent, but the trusted path must advance to the run UI.
+        assert!(app.show_bottom_panel);
+    }
+
+    #[test]
+    fn new_terminal_requires_a_trusted_workspace() {
+        let (mut app, _dir, _store_path, _root) = untrusted_workspace_app("terminal_untrusted");
+        let context = egui::Context::default();
+        let before = app.term_sessions.len();
+
+        app.execute_command(super::CommandId::NewTerminal, &context);
+
+        assert_eq!(app.term_sessions.len(), before);
+        assert!(
+            app.error_message.as_deref().unwrap_or("")
+                .contains("trusted workspace"),
+            "unexpected error: {:?}",
+            app.error_message
+        );
+    }
+
+    #[test]
+    fn new_terminal_is_allowed_after_root_is_trusted() {
+        let (mut app, _dir, _store_path, _root) = trusted_workspace_app("terminal_trusted");
+        let context = egui::Context::default();
+        let before = app.term_sessions.len();
+
+        app.execute_command(super::CommandId::NewTerminal, &context);
+
+        assert_eq!(app.term_sessions.len(), before + 1);
     }
 
     #[test]

@@ -4,7 +4,7 @@ use crate::lsp::types::{
 };
 use crate::lsp::LspClient;
 use crate::settings::{LspSettings, Settings};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +16,9 @@ pub enum ServerStatus {
 
 pub struct LspManager {
     clients: HashMap<LanguageServerId, LspClient>,
+    /// Canonical root paths whose LSP servers may be auto-spawned. Roots are
+    /// only added after the user explicitly trusts the workspace.
+    trusted_roots: HashSet<PathBuf>,
     #[cfg(test)]
     client_factory: Option<Box<dyn Fn(LanguageServerId, PathBuf) -> LspClient + Send + Sync>>,
 }
@@ -30,6 +33,7 @@ impl LspManager {
     pub fn new() -> Self {
         Self {
             clients: HashMap::new(),
+            trusted_roots: HashSet::new(),
             #[cfg(test)]
             client_factory: None,
         }
@@ -41,8 +45,29 @@ impl LspManager {
     ) -> Self {
         Self {
             clients: HashMap::new(),
+            trusted_roots: HashSet::new(),
             client_factory: Some(factory),
         }
+    }
+
+    fn canonical_root(root: &Path) -> PathBuf {
+        root.canonicalize()
+            .unwrap_or_else(|_| root.to_path_buf())
+    }
+
+    /// Allow a root to auto-spawn language servers. Idempotent.
+    pub fn mark_root_trusted(&mut self, root: &Path) {
+        self.trusted_roots.insert(Self::canonical_root(root));
+    }
+
+    /// Forbid auto-spawning for every root and stop all running servers.
+    pub fn revoke_all(&mut self) {
+        self.trusted_roots.clear();
+        self.shutdown_all();
+    }
+
+    fn is_root_trusted(&self, root: &Path) -> bool {
+        self.trusted_roots.contains(&Self::canonical_root(root))
     }
 
     pub fn lazy_get_client(
@@ -53,6 +78,12 @@ impl LspManager {
     ) -> Option<&mut LspClient> {
         if self.clients.contains_key(&server_id) {
             return self.clients.get_mut(&server_id);
+        }
+
+        // Fail closed: never spawn a configured LSP server command from an
+        // untrusted or unknown root.
+        if !self.is_root_trusted(root_path) {
+            return None;
         }
 
         if !settings.lsp.is_enabled(server_id) {
@@ -599,5 +630,57 @@ impl LspManager {
 impl Drop for LspManager {
     fn drop(&mut self) {
         self.shutdown_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::settings::Settings;
+
+    fn test_manager() -> LspManager {
+        LspManager::with_factory(Box::new(|_, _| {
+            crate::lsp::LspClient::new_test_client_with_running(true)
+        }))
+    }
+
+    #[test]
+    fn lsp_client_is_not_spawned_from_untrusted_root() {
+        let mut mgr = test_manager();
+        let settings = Settings::default();
+        let root = std::env::current_dir().unwrap();
+        let path = root.join("src/main.rs");
+
+        assert!(!mgr.did_open(&path, "fn main() {}", 0, &settings, &root));
+        assert!(mgr.clients.is_empty());
+    }
+
+    #[test]
+    fn lsp_client_is_spawned_after_root_is_trusted() {
+        let mut mgr = test_manager();
+        let settings = Settings::default();
+        let root = std::env::current_dir().unwrap();
+        let path = root.join("src/main.rs");
+
+        mgr.mark_root_trusted(&root);
+        assert!(mgr.did_open(&path, "fn main() {}", 1, &settings, &root));
+        assert_eq!(mgr.clients.len(), 1);
+    }
+
+    #[test]
+    fn revoke_all_forbids_spawning_again() {
+        let mut mgr = test_manager();
+        let settings = Settings::default();
+        let root = std::env::current_dir().unwrap();
+        let path = root.join("src/main.rs");
+
+        mgr.mark_root_trusted(&root);
+        assert!(mgr.did_open(&path, "fn main() {}", 2, &settings, &root));
+        mgr.revoke_all();
+        assert!(mgr.clients.is_empty());
+
+        // A fresh request must not re-spawn the server.
+        assert!(!mgr.did_open(&path, "fn main() {}", 3, &settings, &root));
+        assert!(mgr.clients.is_empty());
     }
 }
