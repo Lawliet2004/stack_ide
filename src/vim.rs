@@ -1891,7 +1891,7 @@ impl VimState {
                 c.to_uppercase().next().unwrap_or(c)
             };
             buffer.begin_edit();
-            let _ = buffer.replace_char_range(start_off, start_off + c.len_utf8().max(1), &replacement.to_string());
+            let _ = buffer.replace_char_range(start_off, start_off + 1, &replacement.to_string());
             buffer.commit_edit();
             self.move_horizontal(buffer, 1);
         }
@@ -2111,15 +2111,19 @@ fn prev_word_position(buffer: &TextBuffer, from: &CursorPosition, big: bool) -> 
 fn word_end_position(buffer: &TextBuffer, from: &CursorPosition, big: bool) -> CursorPosition {
     let chars: Vec<char> = buffer.text().chars().collect();
     let mut offset = char_offset(buffer, *from).min(chars.len());
-    offset += 1;
-    // Skip whitespace forward.
-    while offset < chars.len()
-        && chars
-            .get(offset)
-            .map(|c| c.is_whitespace())
-            .unwrap_or(false)
-    {
-        offset += 1;
+    // `e` keeps the current word's end when the caret is already on a word
+    // char; whitespace runs are crossed to reach the next word.
+    let on_word = chars
+        .get(offset)
+        .map(|c| !is_whitespace_or_newline(*c) && is_word_char(*c, big))
+        .unwrap_or(false);
+    if !on_word {
+        while offset < chars.len() && is_whitespace_or_newline(chars[offset]) {
+            offset += 1;
+        }
+    }
+    if offset >= chars.len() {
+        return *from;
     }
     // Advance to the last char of the word run.
     while offset + 1 < chars.len()
@@ -2132,9 +2136,13 @@ fn word_end_position(buffer: &TextBuffer, from: &CursorPosition, big: bool) -> C
         offset += 1;
     }
     buffer
-        .char_index_to_position(offset.min(chars.len().saturating_sub(1).max(0)))
-        .or_else(|| buffer.char_index_to_position(offset))
+        .char_index_to_position(offset)
+        .or_else(|| buffer.char_index_to_position(offset.min(chars.len().saturating_sub(1))))
         .unwrap_or(*from)
+}
+
+fn is_whitespace_or_newline(ch: char) -> bool {
+    ch.is_whitespace() || ch == '\n'
 }
 
 fn motion_repeat(

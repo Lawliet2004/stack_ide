@@ -771,7 +771,7 @@ mod tests {
     #[test]
     fn windows_command_uses_double_quote_escaping() {
         let rendered = render_command_windows(
-            "llm \"{prompt}\"",
+            "llm {prompt}",
             "say \"hi\"",
             &EditorContext::default(),
             false,
