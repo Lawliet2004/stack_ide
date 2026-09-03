@@ -250,7 +250,7 @@ fn handle_start(
         Tag::Emphasis => {} // italic — will be handled at text level
         Tag::Strong => {}   // bold
         Tag::Strikethrough => {}
-        Tag::Link { dest_url: _, .. } => {
+        Tag::Link { .. } => {
             // Store URL for rendering when End(Link) fires
         }
         Tag::Image { dest_url, .. } => {

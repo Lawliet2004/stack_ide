@@ -8206,7 +8206,6 @@ impl BlueIdeApp {
                 ref mut markdown_preview_states,
                 ref mut diff_viewer_states,
                 ref workspace,
-                zen: _,
                 ..
             } = *self;
 

@@ -1,5 +1,10 @@
 //! Blue IDE library crate: editor, LSP client, search, and application shell.
 //!
+//! egui's drawing types take `f32` many places; Rust's `.0` literals fall back to
+//! `f64` under the newer `float_literal_f32_fallback` lint. This is a deliberate
+//! crate-wide opt-out while the egui-typed literals are migrated explicitly.
+#![allow(float_literal_f32_fallback)]
+//!
 //! # Regression tests
 //!
 //! Checklist-driven regression coverage is split by responsibility across module

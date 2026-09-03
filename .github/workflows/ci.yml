@@ -70,13 +70,10 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --check
         continue-on-error: true
-      # Clippy is non-blocking until the pre-existing warnings in the tree are
-      # resolved (see FIX_PLAN Phase 5.3).
       - name: cargo clippy
         run: |
           set -o pipefail
           cargo clippy --lib -- -D warnings 2>&1 | tee /tmp/clippy.log
-        continue-on-error: true
       - name: report clippy warnings to PR
         if: github.event_name == 'pull_request' && always()
         continue-on-error: true

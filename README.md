@@ -49,5 +49,5 @@ See [`ZED_PARITY_PLAN.md`](ZED_PARITY_PLAN.md) for the full gap analysis and roa
 - Executable capabilities (terminals, profiler, tasks, plugins, LSP server
   spawn) are gated by workspace trust; Git remote operations still use `git2`
   and are not trust-gated.
-- `cargo fmt --check` currently surfaces pre-existing formatting drift; CI runs
-  it non-blocking until a formatting pass lands.
+- `cargo fmt --check` surfaces broad pre-existing formatting drift; CI runs it
+  non-blocking until a formatting pass lands.
