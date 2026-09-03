@@ -306,9 +306,15 @@ fn merge_event(hunk: &mut DiffHunk, event: DiffEvent) {
     hunk.new_line_start = new_start;
     hunk.new_line_count = new_end - new_start;
 
-    // Gutter coordinates: modified hunks span the new-file lines.
-    hunk.line_start = hunk.new_line_start;
-    hunk.line_count = hunk.new_line_count;
+    // Gutter coordinates follow the file that has visible lines: deleted hunks
+    // point at the old-file position, otherwise the current/new-file position.
+    if kind == HunkKind::Removed {
+        hunk.line_start = hunk.old_line_start;
+        hunk.line_count = hunk.old_line_count;
+    } else {
+        hunk.line_start = hunk.new_line_start;
+        hunk.line_count = hunk.new_line_count;
+    }
 }
 
 /// Stage only one hunk of `path` into the index.

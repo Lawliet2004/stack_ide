@@ -58,8 +58,9 @@ pub struct DebugSettings {
     pub adapter_path: String,
     #[serde(default)]
     pub adapter_args: Vec<String>,
+    /// Launch-request arguments as a JSON object string (TOML-friendly).
     #[serde(default)]
-    pub launch_args: serde_json::Value,
+    pub launch_args: String,
 }
 
 impl Default for DebugSettings {
@@ -67,7 +68,7 @@ impl Default for DebugSettings {
         Self {
             adapter_path: String::new(),
             adapter_args: Vec::new(),
-            launch_args: serde_json::Value::Null,
+            launch_args: "{}".to_string(),
         }
     }
 }

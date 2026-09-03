@@ -7202,10 +7202,13 @@ impl BlueIdeApp {
                                         .push(bp.line);
                                 }
                                 let breakpoints = by_file.into_iter().collect();
-                                if let Err(error) = self.debug_panel.start_session(
-                                    self.settings.debug.launch_args.clone(),
-                                    breakpoints,
-                                ) {
+                                let launch_args = serde_json::from_str(
+                                    &self.settings.debug.launch_args,
+                                )
+                                .unwrap_or(serde_json::Value::Null);
+                                if let Err(error) =
+                                    self.debug_panel.start_session(launch_args, breakpoints)
+                                {
                                     self.error_message = Some(error);
                                 }
                             }
