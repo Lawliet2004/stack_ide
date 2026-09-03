@@ -67,6 +67,7 @@ jobs:
             done
           } > /tmp/report.md
           gh pr comment "$PR_NUMBER" --body-file /tmp/report.md
+      - name: cargo fmt
+        run: cargo fmt --check
       - name: cargo clippy
         run: cargo clippy --lib -- -D warnings
-        continue-on-error: true

@@ -11229,6 +11229,16 @@ mod tests {
         });
     }
 
+    fn test_file(name: &str, contents: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("blue_ide_{unique}_{name}"));
+        fs::write(&path, contents).unwrap();
+        path
+    }
+
     fn test_dir(name: &str) -> std::path::PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)

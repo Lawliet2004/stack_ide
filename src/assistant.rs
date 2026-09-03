@@ -204,7 +204,14 @@ impl AssistantPanel {
                 // Stream stdout incrementally. stderr is captured so that a
                 // provider that only writes to stderr still surfaces something.
                 use std::io::{BufRead, BufReader, Read};
-                let mut stdout = BufReader::new(child.stdout.take().unwrap_or_default());
+                let Some(stdout_stream) = child.stdout.take() else {
+                    let _ = child.kill();
+                    let _ = tx.send(ProviderEvent::Failed(
+                        "Provider did not expose stdout".to_owned(),
+                    ));
+                    return;
+                };
+                let mut stdout = BufReader::new(stdout_stream);
                 let mut stderr = String::new();
                 let mut streamed = String::new();
                 loop {
