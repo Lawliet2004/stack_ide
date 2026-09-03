@@ -70,8 +70,25 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --check
         continue-on-error: true
-      # Clippy is non-blocking until the 50 pre-existing warnings in the tree are
+      # Clippy is non-blocking until the pre-existing warnings in the tree are
       # resolved (see FIX_PLAN Phase 5.3).
       - name: cargo clippy
-        run: cargo clippy --lib -- -D warnings
+        run: |
+          set -o pipefail
+          cargo clippy --lib -- -D warnings 2>&1 | tee /tmp/clippy.log
         continue-on-error: true
+      - name: report clippy warnings to PR
+        if: github.event_name == 'pull_request' && always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -s /tmp/clippy.log ]; then
+            {
+              echo "Clippy output (non-blocking). Run with -D warnings once these are cleared."
+              sed 's/\x1b\[[0-9;]*m//g' /tmp/clippy.log |
+                grep -E "warning:|^error" -A 3 | head -200
+            } > /tmp/clippy-report.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/clippy-report.md || true
+          fi
