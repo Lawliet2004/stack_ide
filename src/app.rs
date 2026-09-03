@@ -8571,7 +8571,7 @@ impl BlueIdeApp {
                                                                                 item.path.as_ref() == Some(path)
                                                                             }
                                                                             crate::outline::SegmentKind::Symbol(_) => {
-                                                                                state_segments.get(idx).map_or(false, |active_seg| {
+                                                                                state_segments.get(idx).is_some_and(|active_seg| {
                                                                                     active_seg.label == item.label && active_seg.line == item.line
                                                                                 })
                                                                             }

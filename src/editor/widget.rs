@@ -599,7 +599,7 @@ impl EditorWidget {
         let total_available_width = ui.available_width();
         let minimap_panel_width = crate::editor::minimap::MINIMAP_WIDTH as f32;
         let minimap_active = minimap_state.is_some()
-            && minimap_state.as_ref().map_or(false, |m| m.visible)
+            && minimap_state.as_ref().is_some_and(|m| m.visible)
             && total_available_width >= crate::editor::minimap::MINIMAP_AUTO_HIDE_WIDTH;
 
         let available_width = if minimap_active {
