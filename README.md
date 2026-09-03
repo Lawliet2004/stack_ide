@@ -34,7 +34,9 @@ See [`ZED_PARITY_PLAN.md`](ZED_PARITY_PLAN.md) for the full gap analysis and roa
 - **File-type icons** — in the project tree, tabs, and quick open.
 - Plus: LSP (completion, hover, goto, signature help, code actions, inlay
   hints, semantic tokens), project search/replace, git suite (blame, stash,
-  tags, conflicts, log), split terminals with sessions, tasks, Lua plugins,
+  tags, conflicts, log, **per-hunk stage/unstage**, commit amend), DAP debug
+  console (start/stop, breakpoints, continue/pause/step, call stack,
+  scopes/variables, output), split terminals with sessions, tasks, Lua plugins,
   editorconfig, zen mode, and accessibility features.
 
 ## Known limitations / intentionally deferred
@@ -44,10 +46,15 @@ See [`ZED_PARITY_PLAN.md`](ZED_PARITY_PLAN.md) for the full gap analysis and roa
 - Remote/SSH editing is a foundational stub (`src/remote.rs`), not a full SFTP
   transport.
 - Signed extension marketplace, multibuffers, notebooks/REPL, devcontainers,
-  snippet tab-stops, per-hunk git staging, and the full DAP debugger UI are
-  roadmap slices, not yet implemented.
+  snippet tab-stops, and real SSH/SFTP transport remain roadmap slices (they
+  need dependency/allowlist approval). SSH is still a documented stub.
+- DAP console is wired as a foundation: launch args come from Settings
+  (`debug.launch_args` JSON), the adapter path is user-supplied, and the
+  breakpoint/call-stack/variables UX uses the active editor cursor. Trust-gated
+  via `ExecutableCapability::Debugger`; it is not yet enabled for full
+  breakpoint rendering in the editor gutter.
 - Executable capabilities (terminals, profiler, tasks, plugins, LSP server
-  spawn) are gated by workspace trust; Git remote operations still use `git2`
-  and are not trust-gated.
-- `cargo fmt --check` surfaces broad pre-existing formatting drift; CI runs it
-  non-blocking until a formatting pass lands.
+  spawn, debug adapters) are gated by workspace trust; Git remote operations
+  still use `git2` and are not trust-gated.
+- `cargo clippy --lib -- -D warnings` runs non-blocking until lint debt is
+  cleaned; `cargo fmt --check` likewise surfaces pre-existing formatting drift.

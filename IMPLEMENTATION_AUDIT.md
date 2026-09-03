@@ -16,7 +16,7 @@ Audited against the phased master implementation plan on 2026-06-21.
 | Stateless editor widget and upward action flow | Implemented | `src/editor/widget.rs` retains the frame handoff architecture and extensive regression tests. |
 | Non-blocking LSP worker and typed routing | Implemented for current features | `src/lsp/transport.rs`, `src/lsp/types.rs`, and `src/app.rs` use correlated typed completion, hover, goto, symbol, and format responses. |
 | Existing plugin sandbox | Implemented | `src/plugins/sandbox.rs` and `src/plugins/api.rs` restrict plugin APIs, remove `os`/`io`/`package`/`require`/`dofile`, and cap instructions. Workspace trust now gates plugin loading; tests assert the removed globals are `nil`. |
-| Git hunks and basic panel | Partial | `src/git/diff.rs` implements hunk parsing/operations; the generalized diff document, side-by-side UI, sources, synchronized scrolling, and intraline highlighting are missing. |
+| Git hunks and basic panel | Partial | `src/git/diff.rs` implements hunk parsing/operations plus per-hunk `stage_hunk`/`unstage_hunk` and commit amend. The generalized diff document, side-by-side UI, sources, synchronized scrolling, and intraline highlighting are still missing. |
 | Panes and terminal tabs | Partial | Pane layout and multiple `TerminalPane` values exist. Named/reorderable/splittable/restored terminal sessions and lifecycle metadata are missing. |
 | Multi-root workspace and deepest-root ownership | Partial | `src/workspace.rs` adds ordered roots, stable `RootId`, canonical duplicate handling, and deepest-root ownership with tests. App LSP/hover/outline/task/terminal/profiler/plugin paths now resolve roots through `workspace_root_for_path`; a single-file fallback to `FileTree::root_path` remains in the editor render loop. |
 | URI-backed local/SSH document identity | Foundation added | `DocumentUri` distinguishes local and `ssh://` documents. Buffers/tabs still use `PathBuf`; no SSH transport is wired. |
@@ -32,13 +32,13 @@ Audited against the phased master implementation plan on 2026-06-21.
 | Git fetch/pull/push worker UX | Missing | No authenticated/cancellable progress worker or remote/ref/conflict UX exists. |
 | SSH/SFTP remote editing | Missing | No connection manager, known-host verification, browsing, save conflict detection, reconnect, or atomic upload exists. |
 | Signed extension marketplace | Missing | No index client, signature/hash verification, safe archive extraction, staged install/rollback/update/uninstall implementation exists. |
-| DAP debugging | Missing | No DAP framing/client/session types, adapter lifecycle, breakpoint/step/thread/stack/scope/variable UX exists. |
+| DAP debugging | Partial | `src/debug.rs` has DAP framing/client/session types, a toolbar (start/stop, continue/pause/step), breakpoint toggling at the active cursor, call-stack selection, scopes/variables, and console output wired into the bottom `DebugConsole` panel. Remaining: editor-gutter breakpoint rendering, richer adapter config, and per-adapter launch-arg forms. |
 | Rust flamegraph profiling | Partial | Trust-gated profiler panel with a flamegraph/SVG viewer exists; the runner still shells out to `cargo flamegraph` and lacks a full cancellation/progress model. |
 
 ## Verification
 
-- No local Rust toolchain was available while the fixes were authored; verification relies entirely on GitHub Actions (`cargo test --lib`, `cargo clippy --lib -- -D warnings`, `cargo fmt --check`).
-- The pre-existing integration policy failure (`mlua` absent from the dependency allowlist) still needs resolution before `cargo test --test integration_test` goes green.
+- No local Rust toolchain was available while the fixes were authored; verification relies entirely on GitHub Actions (`cargo check`, `cargo test --lib`, `cargo test --test integration_test`).
+- CI currently gates check + both test suites; `cargo clippy --lib -- -D warnings` and `cargo fmt --check` run non-blocking until lint/format debt is cleaned.
 
 ## Required implementation order
 

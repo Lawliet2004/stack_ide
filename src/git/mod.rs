@@ -397,3 +397,58 @@ fn map_status(s: git2::Status) -> FileStatus {
 fn is_index_status(s: git2::Status) -> bool {
     s.is_index_new() || s.is_index_modified() || s.is_index_deleted() || s.is_index_renamed()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_repo(name: &str) -> (std::path::PathBuf, GitRepo) {
+        let dir = std::env::temp_dir().join(format!(
+            "blue_ide_git_mod_{name}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        drop(cfg);
+        let git = GitRepo::open(&dir).unwrap();
+        (dir, git)
+    }
+
+    fn commit_file(repo: &Repository, dir: &Path, name: &str, content: &str, message: &str) {
+        let path = dir.join(name);
+        std::fs::write(&path, content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new(name)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])
+            .unwrap();
+    }
+
+    #[test]
+    fn amend_replaces_head_message_and_content() {
+        let (dir, git) = temp_repo("amend");
+        commit_file(&git.repo, &dir, "a.txt", "one\n", "initial");
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        git.stage_file(&dir.join("a.txt")).unwrap();
+        git.amend("amended").unwrap();
+
+        let head = git.repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.message().map(str::trim), Some("amended"));
+        let tree = head.tree().unwrap();
+        let entry = tree.get_path(std::path::Path::new("a.txt")).unwrap();
+        let blob = git.repo.find_blob(entry.id()).unwrap();
+        assert_eq!(blob.content(), b"one\ntwo\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

@@ -33,10 +33,10 @@ Legend: ✅ parity or equivalent · 🟡 partial (exists, needs polish) · ❌ m
 | Signature help, hover docs, completions, code actions, inlay hints, code lens, semantic tokens | ✅ | `lsp/*`, `editor/hover.rs`, `editor/completion.rs` |
 | Line ops: move/duplicate/sort/join, case transforms, undo history panel | ✅ | `editor/buffer.rs` |
 | Bookmarks | ✅ | F2/F9 + gutter |
-| **Vim / modal editing** | ❌ | Zed's #1 community feature. **Phase 1 of this plan.** |
+| **Vim / modal editing** | ✅ | `vim.rs` — modal state machine, motions/operators/text objects, `/` `?`, viewport scrolls, ex line. |
 | **Multibuffers** (excerpts of many files in one buffer; used by project search results) | ❌ | Roadmap Phase 3. |
 | Edit predictions / inline ghost-text completions | ❌ | Requires a model backend; roadmap Phase 4. |
-| Auto save (off / after delay / on focus change) | ❌ | **Phase 1.** |
+| Auto save (off / after delay / on focus change) | ✅ | `app.rs` `poll_auto_save`; LSP `didSave` off pending approval. |
 
 ### B. Appearance & UI polish
 
@@ -66,8 +66,9 @@ Legend: ✅ parity or equivalent · 🟡 partial (exists, needs polish) · ❌ m
 ### D. Git
 
 Blame gutter, fetch/pull/push, log viewer, tags, stash, conflict resolver,
-cherry-pick, diff-vs-HEAD viewer, status coloring — ✅ broad parity (`git/`).
-Roadmap polish: per-hunk stage/unstage buttons, commit amend.
+cherry-pick, diff-vs-HEAD viewer, status coloring, **per-hunk stage/unstage**,
+and **commit amend** — ✅ broad parity (`git/`). Remaining polish: side-by-side
+diff view, sources/synchronized scrolling, intraline highlighting.
 
 ### E. Terminal & processes
 
@@ -82,7 +83,7 @@ collab** slice is listed in Phase 4 of the roadmap, non-goal for now.
 
 | Zed capability | Status | Notes |
 |---|---|---|
-| Assistant panel (conversation, context of file/selection, insert code) | ❌ | **Phase 1** — provider-pluggable panel; ships a dependency-free "custom command" provider (works with `ollama`, `llm`, `aichat`, any CLI) plus an OpenAI-compatible provider seam. |
+| Assistant panel (conversation, context of file/selection, insert code) | ✅ | `assistant.rs` — provider-pluggable panel with a dependency-free custom-command provider (`ollama`, `llm`, CLI), context chips, insert/copy. |
 | Inline assist (prompt-to-edit in buffer) | ❌ | Phase 4. |
 | Edit predictions (Copilot-style) | ❌ | Phase 4. |
 
@@ -95,12 +96,15 @@ with signature verification is a standalone security-sensitive slice).
 ### I. Remote development (SSH projects, dev containers)
 
 🟡 `DocumentUri`/`remote.rs` foundation + per-root trust exist; SSH transport,
-browse, conflict-safe save — Phase 3.
+browse, conflict-safe save, devcontainers — roadmap (needs dependency approval
+for real SFTP).
 
 ### J. Debugger / profiler
 
-DAP client foundation (`debug.rs`) + Rust profiler plumbing (`profiler.rs`);
-breakpoint/variable/stack UX — Phase 3.
+🟡 DAP client (`debug.rs`) wired into the bottom **Debug Console** panel:
+start/stop, continue/pause/step, breakpoint toggle at the active cursor,
+call-stack selection, scopes/variables, output. Remaining: gutter breakpoint
+rendering, richer adapter config forms. Rust profiler plumbing is trust-gated.
 
 ### K. Accessibility
 
@@ -147,10 +151,13 @@ integration guards passing).
 - **Phase 2:** more tree-sitter grammars (needs allowlisted deps), LS
   auto-install, snippet tab-stops (policy ask), per-language settings.
 - **Phase 3:** multibuffers (project-search-as-buffer), notification center,
-  pane zoom + tab DnD, git hunk staging UI, SSH remote editing,
-  DAP debugging UI, extension marketplace (signed).
+  pane zoom + tab DnD, SSH remote editing, signed extension marketplace.
 - **Phase 4:** edit predictions & inline assist (needs model backend),
   collaboration (relay), notebooks/REPL, dev containers.
+
+Already landed on this branch: git per-hunk stage/unstage + commit amend, and
+the DAP debugger bottom-panel UX. They are reflected in the gap-analysis tables
+above.
 
 ## 4. Guardrails honored
 
