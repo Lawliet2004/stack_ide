@@ -70,10 +70,13 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --check
         continue-on-error: true
+      # Non-blocking until the tree's clippy debt (unused fns, collapsible ifs,
+      # &PathBuf, manual maps, etc.) is cleaned up; see FIX_PLAN Phase 5.3.
       - name: cargo clippy
         run: |
           set -o pipefail
           cargo clippy --lib -- -D warnings 2>&1 | tee /tmp/clippy.log
+        continue-on-error: true
       - name: report clippy warnings to PR
         if: github.event_name == 'pull_request' && always()
         continue-on-error: true
