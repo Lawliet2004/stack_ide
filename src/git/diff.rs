@@ -219,7 +219,7 @@ fn diff_texts(repo: &Repository, rel_str: &str, old_text: &str, new_text: &str) 
 }
 
 /// One changed line with its old/new file coordinates.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct DiffEvent {
     kind: HunkKind,
     old_start: usize,
@@ -259,18 +259,16 @@ fn group_events(events: Vec<DiffEvent>) -> Vec<DiffHunk> {
             }
         }
 
+        let kind = event.kind;
+        let (line_start, line_count) = if kind == HunkKind::Removed {
+            (event.old_start, event.old_count)
+        } else {
+            (event.new_start, event.new_count)
+        };
         hunks.push(DiffHunk {
-            kind: event.kind,
-            line_start: if event.kind == HunkKind::Removed {
-                event.old_start
-            } else {
-                event.new_start
-            },
-            line_count: if event.kind == HunkKind::Removed {
-                event.old_count
-            } else {
-                event.new_count
-            },
+            kind,
+            line_start,
+            line_count,
             old_line_start: event.old_start,
             old_line_count: event.old_count,
             new_line_start: event.new_start,
