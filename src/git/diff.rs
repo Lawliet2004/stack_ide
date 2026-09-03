@@ -294,6 +294,7 @@ fn merge_event(hunk: &mut DiffHunk, event: DiffEvent) {
         (HunkKind::Removed, HunkKind::Removed) => HunkKind::Removed,
         _ => HunkKind::Modified,
     };
+    let kind_is_removed = kind == HunkKind::Removed;
     hunk.kind = kind;
 
     let old_start = hunk.old_line_start.min(event.old_start);
@@ -308,7 +309,7 @@ fn merge_event(hunk: &mut DiffHunk, event: DiffEvent) {
 
     // Gutter coordinates follow the file that has visible lines: deleted hunks
     // point at the old-file position, otherwise the current/new-file position.
-    if kind == HunkKind::Removed {
+    if kind_is_removed {
         hunk.line_start = hunk.old_line_start;
         hunk.line_count = hunk.old_line_count;
     } else {
