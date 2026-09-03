@@ -389,6 +389,10 @@ pub struct DebugSession {
     pub active_frame: Option<u64>,
     /// Last pending request seq → command name (for routing responses).
     pending: HashMap<u64, String>,
+    /// Launch arguments supplied by the UI, sent after the adapter is initialized.
+    pending_launch: Option<Value>,
+    /// Breakpoints to send after the adapter is initialized.
+    pending_breakpoints: Vec<(PathBuf, Vec<usize>)>,
 }
 
 impl DebugSession {
@@ -404,17 +408,41 @@ impl DebugSession {
             active_thread: None,
             active_frame: None,
             pending: HashMap::new(),
+            pending_launch: None,
+            pending_breakpoints: Vec::new(),
         }
     }
 
-    /// Drive initialization: send `initialize` + `launch`, then set breakpoints.
+    /// Drive initialization: send `initialize` and remember the launch arguments
+    /// and breakpoints to send once the adapter reports the `initialized` event.
     pub fn start(&mut self, launch_args: Value, bps: Vec<(PathBuf, Vec<usize>)>) {
+        self.pending_launch = Some(launch_args);
+        self.pending_breakpoints = bps;
         let seq = self.client.initialize();
         self.pending.insert(seq, "initialize".to_string());
-        // Store launch args and bps for after `initialized` event.
-        // (We stash them in console as an implementation shortcut.)
-        let _ = launch_args; // used after initialized event in `poll`
-        let _ = bps;
+    }
+
+    /// Toggle a breakpoint at `file:line` and, if the session is live, update the
+    /// adapter immediately for that file.
+    pub fn toggle_breakpoint(&mut self, file: PathBuf, line: usize) {
+        self.breakpoints.toggle(file.clone(), line);
+        let lines: Vec<usize> = self
+            .breakpoints
+            .for_file(&file)
+            .into_iter()
+            .map(|bp| bp.line)
+            .collect();
+        if self.state == DebugState::Running || self.state == DebugState::Paused {
+            let seq = self.client.set_breakpoints(&file, &lines);
+            self.pending.insert(seq, "setBreakpoints".to_string());
+        }
+    }
+
+    /// Select a stack frame and load its scopes/variables.
+    pub fn select_frame(&mut self, frame_id: u64) {
+        self.active_frame = Some(frame_id);
+        let seq = self.client.scopes(frame_id);
+        self.pending.insert(seq, "scopes".to_string());
     }
 
     /// Non-blocking poll of incoming DAP messages. Call every frame.
@@ -506,6 +534,10 @@ impl DebugSession {
                         .collect();
                 }
             }
+            Some("launch") => {
+                let seq = self.client.configuration_done();
+                self.pending.insert(seq, "configurationDone".to_string());
+            }
             _ => {}
         }
     }
@@ -514,20 +546,32 @@ impl DebugSession {
         match e.event.as_str() {
             "initialized" => {
                 self.state = DebugState::Running;
-                // Send all pending breakpoints.
-                let by_file: HashMap<PathBuf, Vec<usize>> = {
-                    let mut m: HashMap<PathBuf, Vec<usize>> = HashMap::new();
-                    for bp in self.breakpoints.all() {
-                        m.entry(bp.file.clone()).or_default().push(bp.line);
+                // Send breakpoints that were configured at start time, plus any
+                // toggled after the session became live.
+                let mut by_file: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+                for bp in self.breakpoints.all() {
+                    by_file.entry(bp.file.clone()).or_default().push(bp.line);
+                }
+                for (file, lines) in std::mem::take(&mut self.pending_breakpoints) {
+                    if !by_file.contains_key(&file) {
+                        by_file.insert(file, lines);
                     }
-                    m
-                };
+                }
                 for (file, lines) in &by_file {
+                    if lines.is_empty() {
+                        continue;
+                    }
                     let seq = self.client.set_breakpoints(file, lines);
                     self.pending.insert(seq, "setBreakpoints".to_string());
                 }
-                let seq = self.client.configuration_done();
-                self.pending.insert(seq, "configurationDone".to_string());
+
+                if let Some(launch_args) = self.pending_launch.take() {
+                    let seq = self.client.launch(launch_args);
+                    self.pending.insert(seq, "launch".to_string());
+                } else {
+                    let seq = self.client.configuration_done();
+                    self.pending.insert(seq, "configurationDone".to_string());
+                }
             }
             "stopped" => {
                 self.state = DebugState::Paused;
@@ -623,7 +667,11 @@ impl Default for DebugPanelState {
 }
 
 impl DebugPanelState {
-    pub fn start_session(&mut self) -> Result<(), String> {
+    pub fn start_session(
+        &mut self,
+        launch_args: Value,
+        breakpoints: Vec<(PathBuf, Vec<usize>)>,
+    ) -> Result<(), String> {
         if self.config.adapter_path.trim().is_empty() {
             return Err("No debug adapter configured. Set the adapter path in Settings.".into());
         }
@@ -633,11 +681,9 @@ impl DebugPanelState {
             .iter()
             .map(String::as_str)
             .collect();
-        let client =
-            DapClient::spawn(&self.config.adapter_path, &adapter_args)?;
+        let client = DapClient::spawn(&self.config.adapter_path, &adapter_args)?;
         let mut session = DebugSession::new(client);
-        let seq = session.client.initialize();
-        session.pending.insert(seq, "initialize".to_string());
+        session.start(launch_args, breakpoints);
         self.session = Some(session);
         Ok(())
     }
@@ -666,8 +712,26 @@ impl DebugPanelState {
     }
 }
 
+/// Actions returned by the debug toolbar for the app shell to apply.
+#[derive(Debug, Default)]
+pub struct DebugToolbarAction {
+    /// The user pressed Start; the app shell owns the launch configuration.
+    pub start_requested: bool,
+    /// Toggle a breakpoint at this file/line.
+    pub toggle_breakpoint: Option<(PathBuf, usize)>,
+}
+
 /// Render the debug toolbar row.
-pub fn render_debug_toolbar(ui: &mut egui::Ui, state: &mut DebugPanelState) {
+///
+/// `trusted` disables starting debug adapters in untrusted workspaces.
+/// `cursor` is the active editor's current file/line for breakpoint toggling.
+pub fn render_debug_toolbar(
+    ui: &mut egui::Ui,
+    state: &mut DebugPanelState,
+    trusted: bool,
+    cursor: Option<(PathBuf, usize)>,
+) -> DebugToolbarAction {
+    let mut action = DebugToolbarAction::default();
     let s = state.state();
     let running = matches!(s, DebugState::Running | DebugState::Paused);
     let paused = s == DebugState::Paused;
@@ -675,11 +739,26 @@ pub fn render_debug_toolbar(ui: &mut egui::Ui, state: &mut DebugPanelState) {
 
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(not_started, egui::Button::new("▶ Start"))
+            .add_enabled(not_started && trusted, egui::Button::new("▶ Start"))
+            .on_hover_text(if trusted {
+                "Start a debug session"
+            } else {
+                "Debug adapters require a trusted workspace"
+            })
             .clicked()
         {
-            if let Err(e) = state.start_session() {
-                eprintln!("debug: {e}");
+            action.start_requested = true;
+        }
+        if ui
+            .small_button("◉ Breakpoint")
+            .on_hover_text("Toggle a breakpoint at the cursor")
+            .clicked()
+        {
+            if let Some((file, line)) = cursor {
+                if let Some(s) = &mut state.session {
+                    s.toggle_breakpoint(file.clone(), line);
+                }
+                action.toggle_breakpoint = Some((file, line));
             }
         }
         if ui
@@ -758,10 +837,11 @@ pub fn render_debug_toolbar(ui: &mut egui::Ui, state: &mut DebugPanelState) {
             ui.spinner();
         }
     });
+    action
 }
 
 /// Render the call stack panel.
-pub fn render_call_stack(ui: &mut egui::Ui, state: &DebugPanelState) {
+pub fn render_call_stack(ui: &mut egui::Ui, state: &mut DebugPanelState) {
     ui.label("Call Stack");
     ui.separator();
     let session = match &state.session {
@@ -775,6 +855,7 @@ pub fn render_call_stack(ui: &mut egui::Ui, state: &DebugPanelState) {
         ui.weak("No frames");
         return;
     }
+    let mut selected: Option<u64> = None;
     egui::ScrollArea::vertical()
         .max_height(150.0)
         .show(ui, |ui| {
@@ -787,10 +868,15 @@ pub fn render_call_stack(ui: &mut egui::Ui, state: &DebugPanelState) {
                     frame.line
                 );
                 if ui.selectable_label(active, &label).clicked() {
-                    // Frame selection handled by caller via click events.
+                    selected = Some(frame.id);
                 }
             }
         });
+    if let Some(frame_id) = selected {
+        if let Some(s) = &mut state.session {
+            s.select_frame(frame_id);
+        }
+    }
 }
 
 /// Render the variables panel.

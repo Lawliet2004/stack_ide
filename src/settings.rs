@@ -27,6 +27,8 @@ pub struct Settings {
     pub ui: UiSettings,
     #[serde(default)]
     pub assistant: AssistantSettings,
+    #[serde(default)]
+    pub debug: DebugSettings,
 }
 
 /// AI assistant panel configuration. The dependency-free provider pipes the
@@ -48,6 +50,28 @@ impl Default for AssistantSettings {
     }
 }
 
+/// DAP/debugger configuration. The adapter command is user-supplied so no
+/// specific debugger is hardcoded; the launch request is passed through as-is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DebugSettings {
+    #[serde(default)]
+    pub adapter_path: String,
+    #[serde(default)]
+    pub adapter_args: Vec<String>,
+    #[serde(default)]
+    pub launch_args: serde_json::Value,
+}
+
+impl Default for DebugSettings {
+    fn default() -> Self {
+        Self {
+            adapter_path: String::new(),
+            adapter_args: Vec::new(),
+            launch_args: serde_json::Value::Null,
+        }
+    }
+}
+
 fn default_version() -> u32 {
     SUPPORTED_VERSION
 }
@@ -64,6 +88,7 @@ impl Default for Settings {
             lsp: LspSettings::default(),
             ui: UiSettings::default(),
             assistant: AssistantSettings::default(),
+            debug: DebugSettings::default(),
         }
     }
 }

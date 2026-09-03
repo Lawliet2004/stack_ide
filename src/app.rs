@@ -1375,6 +1375,9 @@ pub struct BlueIdeApp {
     pub trust_management_open: bool,
     /// Last task output lines for the Output panel (mirrors task_panel output).
     pub task_output: Vec<String>,
+    /// DAP debugger panel and breakpoint store.
+    pub debug_panel: crate::debug::DebugPanelState,
+    pub debug_breakpoints: crate::debug::BreakpointStore,
     // ─── Terminal Feature 1–6 state ───────────────────────────────────────────
     /// Named session manager (Feature 1).
     pub term_sessions: crate::terminal::session::SessionManager,
@@ -1646,6 +1649,8 @@ impl BlueIdeApp {
             startup_breakdown: crate::perf::startup::StartupBreakdownState::default(),
             memory_rss: 0,
             memory_last_poll: std::time::Instant::now(),
+            debug_panel: crate::debug::DebugPanelState::default(),
+            debug_breakpoints: crate::debug::BreakpointStore::default(),
         };
         #[cfg(not(test))]
         let mut app = app;
@@ -2798,6 +2803,28 @@ impl BlueIdeApp {
                                 .hint_text("e.g. ollama run codellama")
                                 .desired_width(420.0),
                         );
+
+                        ui.add_space(12.0);
+                        ui.heading("Debugger");
+                        ui.add_space(6.0);
+                        ui.label("DAP adapter command; leave empty to disable.");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut draft.debug.adapter_path)
+                                .id(egui::Id::new("debug_adapter_path_setting"))
+                                .hint_text("e.g. lldb-vscode")
+                                .desired_width(420.0),
+                        );
+                        ui.label("Arguments (one per line):");
+                        let mut debug_args_text = draft.debug.adapter_args.join("\n");
+                        if ui
+                            .text_edit_multiline(&mut debug_args_text)
+                            .changed()
+                        {
+                            draft.debug.adapter_args = debug_args_text
+                                .lines()
+                                .map(String::from)
+                                .collect();
+                        }
 
                         ui.add_space(12.0);
                         ui.heading("Panels");
@@ -4699,6 +4726,16 @@ impl BlueIdeApp {
     }
 
     /// Apply an action emitted by the git panel.
+    /// Text to use for a git operation: the open buffer content when available,
+    /// otherwise the on-disk file.
+    fn buffer_text_or_disk(&self, path: &PathBuf) -> String {
+        if let Some(buffer) = self.buffers.get(path) {
+            buffer.text().to_string()
+        } else {
+            std::fs::read_to_string(path).unwrap_or_default()
+        }
+    }
+
     fn handle_git_panel_action(&mut self, action: GitPanelAction) {
         match action {
             GitPanelAction::Stage(path) => {
@@ -4717,6 +4754,24 @@ impl BlueIdeApp {
                     git.dirty = true;
                 }
             }
+            GitPanelAction::StageHunk { path, hunk } => {
+                let text = self.buffer_text_or_disk(&path);
+                if let Some(git) = &mut self.git {
+                    if let Err(error) = git.stage_hunk(&path, &text, &hunk) {
+                        eprintln!("git2: failed to stage hunk {}: {error}", path.display());
+                    }
+                    git.dirty = true;
+                }
+            }
+            GitPanelAction::UnstageHunk { path, hunk } => {
+                let text = self.buffer_text_or_disk(&path);
+                if let Some(git) = &mut self.git {
+                    if let Err(error) = git.unstage_hunk(&path, &text, &hunk) {
+                        eprintln!("git2: failed to unstage hunk {}: {error}", path.display());
+                    }
+                    git.dirty = true;
+                }
+            }
             GitPanelAction::Commit(message) => {
                 if let Some(git) = &mut self.git {
                     if git.staged_paths.is_empty() {
@@ -4724,6 +4779,19 @@ impl BlueIdeApp {
                     }
                     if let Err(error) = git.commit(&message) {
                         eprintln!("git2: commit failed: {error}");
+                    } else {
+                        self.git_commit_msg.clear();
+                    }
+                    git.dirty = true;
+                }
+            }
+            GitPanelAction::AmendCommit(message) => {
+                if let Some(git) = &mut self.git {
+                    if git.staged_paths.is_empty() {
+                        return;
+                    }
+                    if let Err(error) = git.amend(&message) {
+                        eprintln!("git2: amend failed: {error}");
                     } else {
                         self.git_commit_msg.clear();
                     }
@@ -7102,12 +7170,58 @@ impl BlueIdeApp {
                         }
                     }
                     BottomPanelTab::DebugConsole => {
-                        ui.centered_and_justified(|ui| {
-                            ui.label(
-                                RichText::new("Start a debug session to use the Debug Console")
-                                    .color(self.active_palette.semantic.muted_text),
-                            );
+                        let cursor = self.active.as_ref().and_then(|path| {
+                            self.buffers
+                                .get(path)
+                                .map(|buffer| (path.clone(), buffer.cursor().line))
                         });
+                        let trusted = self.trust_allows(crate::workspace::ExecutableCapability::Debugger);
+                        let mut debug_action = crate::debug::render_debug_toolbar(
+                            ui,
+                            &mut self.debug_panel,
+                            trusted,
+                            cursor,
+                        );
+
+                        if debug_action.start_requested {
+                            if !trusted {
+                                self.error_message = Some(
+                                    "Debug adapters require a trusted workspace. Click the trust badge to enable."
+                                        .to_owned(),
+                                );
+                            } else {
+                                self.debug_panel.config.adapter_path =
+                                    self.settings.debug.adapter_path.clone();
+                                self.debug_panel.config.adapter_args =
+                                    self.settings.debug.adapter_args.clone();
+                                let mut by_file: HashMap<PathBuf, Vec<usize>> = HashMap::new();
+                                for bp in self.debug_breakpoints.all() {
+                                    by_file
+                                        .entry(bp.file.clone())
+                                        .or_default()
+                                        .push(bp.line);
+                                }
+                                let breakpoints = by_file.into_iter().collect();
+                                if let Err(error) = self.debug_panel.start_session(
+                                    self.settings.debug.launch_args.clone(),
+                                    breakpoints,
+                                ) {
+                                    self.error_message = Some(error);
+                                }
+                            }
+                            debug_action.start_requested = false;
+                        }
+
+                        if let Some((path, line)) = debug_action.toggle_breakpoint {
+                            self.debug_breakpoints.toggle(path, line);
+                        }
+
+                        ui.separator();
+                        crate::debug::render_call_stack(ui, &mut self.debug_panel);
+                        ui.separator();
+                        crate::debug::render_variables(ui, &mut self.debug_panel);
+                        ui.separator();
+                        crate::debug::render_debug_console(ui, &mut self.debug_panel);
                     }
                     BottomPanelTab::Ports => {
                         ui.centered_and_justified(|ui| {
@@ -10309,6 +10423,7 @@ impl eframe::App for BlueIdeApp {
         self.poll_blame_result();
         self.poll_network_result();
         self.poll_tasks();
+        self.debug_panel.poll();
         self.poll_auto_save(context);
 
         // ── Memory RSS polling (at most every 2 seconds) ─────────────────────

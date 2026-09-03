@@ -58,6 +58,10 @@ pub struct GitRepo {
     pub root: PathBuf,
     pub branch: String,
     pub file_diffs: HashMap<PathBuf, Vec<DiffHunk>>,
+    /// Hunks that are currently in the index (HEAD vs index).
+    pub staged_diffs: HashMap<PathBuf, Vec<DiffHunk>>,
+    /// Hunks that are currently unstaged (index vs working tree).
+    pub unstaged_diffs: HashMap<PathBuf, Vec<DiffHunk>>,
     pub status_map: HashMap<PathBuf, FileStatus>,
     /// Paths that are currently staged in the index. Kept in sync by `refresh`.
     pub staged_paths: HashSet<PathBuf>,
@@ -80,6 +84,8 @@ impl GitRepo {
             root,
             branch,
             file_diffs: HashMap::new(),
+            staged_diffs: HashMap::new(),
+            unstaged_diffs: HashMap::new(),
             status_map: HashMap::new(),
             staged_paths: HashSet::new(),
             dirty: true,
@@ -111,11 +117,21 @@ impl GitRepo {
             }
         }
 
-        // 3. Refresh diffs for open buffers against HEAD.
+        // 3. Refresh diffs for open buffers against HEAD, the index (staged),
+        // and the working tree (unstaged). The staged/unstaged split is what
+        // drives per-hunk staging in the git panel.
         self.file_diffs.clear();
+        self.staged_diffs.clear();
+        self.unstaged_diffs.clear();
         for (path, text) in open_buffers {
             let hunks = diff::diff_file_against_head(&self.repo, path, text);
             self.file_diffs.insert(path.clone(), hunks);
+
+            let staged = diff::diff_index_against_head(&self.repo, path);
+            self.staged_diffs.insert(path.clone(), staged);
+
+            let unstaged = diff::diff_file_against_index(&self.repo, path, text);
+            self.unstaged_diffs.insert(path.clone(), unstaged);
         }
 
         self.dirty = false;
@@ -131,6 +147,26 @@ impl GitRepo {
         // index.write() saves the updated index state back to the disk's .git/index file.
         index.write()?;
         Ok(())
+    }
+
+    /// Stage one hunk of `path` using the current working-tree content.
+    pub fn stage_hunk(
+        &self,
+        path: &PathBuf,
+        text: &str,
+        hunk: &DiffHunk,
+    ) -> Result<(), git2::Error> {
+        diff::stage_hunk(&self.repo, path, text, hunk)
+    }
+
+    /// Unstage one hunk of `path`, reverting it in the index to HEAD.
+    pub fn unstage_hunk(
+        &self,
+        path: &PathBuf,
+        text: &str,
+        hunk: &DiffHunk,
+    ) -> Result<(), git2::Error> {
+        diff::unstage_hunk(&self.repo, path, text, hunk)
     }
 
     /// Unstage a file by resetting the index entry to the HEAD tree.
@@ -160,6 +196,24 @@ impl GitRepo {
         self.repo
             .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
         Ok(())
+    }
+
+    /// Amend the current HEAD commit with the staged index and a new message.
+    pub fn amend(&self, message: &str) -> Result<(), git2::Error> {
+        let mut index = self.repo.index()?;
+        let tree_oid = index.write_tree()?;
+        let tree = self.repo.find_tree(tree_oid)?;
+        let sig = self.repo.signature()?;
+        let head = self.repo.head()?.peel_to_commit()?;
+        head.amend(
+            Some("HEAD"),
+            Some(&sig),
+            Some(&sig),
+            None,
+            Some(message),
+            Some(&tree),
+        )
+        .map(|_| ())
     }
 
     /// List all local branch names.

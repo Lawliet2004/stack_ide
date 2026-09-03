@@ -16,7 +16,10 @@ pub enum GitPanelAction {
     None,
     Stage(PathBuf),
     Unstage(PathBuf),
+    StageHunk { path: PathBuf, hunk: DiffHunk },
+    UnstageHunk { path: PathBuf, hunk: DiffHunk },
     Commit(String),
+    AmendCommit(String),
     ShowBranchPicker,
     // ── Remote operations ──
     Fetch,
@@ -132,16 +135,28 @@ pub fn render_git_panel(
     });
     ui.separator();
 
-    // Split files into staged and unstaged groups.
+    // Split files into staged and unstaged groups. A partially staged file can
+    // appear in both groups, which lets per-hunk stage/unstage operate on the
+    // remaining unstaged hunks while keeping the already-staged hunks visible.
     let mut staged: Vec<(PathBuf, FileStatus)> = Vec::new();
     let mut unstaged: Vec<(PathBuf, FileStatus)> = Vec::new();
     for (path, status) in &git.status_map {
         if *status == FileStatus::Unmodified {
             continue;
         }
-        if git.is_staged(path) {
+        let has_staged_hunks = git
+            .staged_diffs
+            .get(path)
+            .map_or(false, |hunks| !hunks.is_empty());
+        let has_unstaged_hunks = git
+            .unstaged_diffs
+            .get(path)
+            .map_or(false, |hunks| !hunks.is_empty());
+
+        if has_staged_hunks || git.is_staged(path) {
             staged.push((path.clone(), status.clone()));
-        } else {
+        }
+        if has_unstaged_hunks || *status == FileStatus::Untracked {
             unstaged.push((path.clone(), status.clone()));
         }
     }
@@ -153,6 +168,7 @@ pub fn render_git_panel(
         } else {
             for (path, status) in staged {
                 render_file_row(ui, &path, &status, true, &mut action);
+                render_hunk_rows(ui, git, &path, true, &mut action);
             }
         }
     });
@@ -164,6 +180,7 @@ pub fn render_git_panel(
         } else {
             for (path, status) in unstaged {
                 render_file_row(ui, &path, &status, false, &mut action);
+                render_hunk_rows(ui, git, &path, false, &mut action);
             }
         }
     });
@@ -174,19 +191,25 @@ pub fn render_git_panel(
     ui.label("Commit message");
     ui.text_edit_multiline(commit_msg);
     let has_staged = !git.staged_paths.is_empty();
+    let mut amend = false;
+    ui.checkbox(&mut amend, "Amend last commit");
     if !has_staged {
         ui.weak("No staged changes");
     }
-    ui.add_enabled(
-        has_staged && !commit_msg.is_empty(),
-        egui::Button::new("Commit"),
-    )
-    .clicked()
-    .then(|| {
-        if has_staged && !commit_msg.is_empty() {
-            action = GitPanelAction::Commit(commit_msg.clone());
+    let can_commit = has_staged && !commit_msg.is_empty();
+    let button_label = if amend { "Commit (amend)" } else { "Commit" };
+    if ui
+        .add_enabled(can_commit, egui::Button::new(button_label))
+        .clicked()
+    {
+        if can_commit {
+            action = if amend {
+                GitPanelAction::AmendCommit(commit_msg.clone())
+            } else {
+                GitPanelAction::Commit(commit_msg.clone())
+            };
         }
-    });
+    }
 
     ui.separator();
 
@@ -273,6 +296,71 @@ fn render_file_row(
             }
         });
     });
+}
+
+/// Render per-hunk stage/unstage buttons for a file.
+fn render_hunk_rows(
+    ui: &mut egui::Ui,
+    git: &GitRepo,
+    path: &PathBuf,
+    staged: bool,
+    action: &mut GitPanelAction,
+) {
+    let hunks = if staged {
+        git.staged_diffs.get(path)
+    } else {
+        git.unstaged_diffs.get(path)
+    };
+    let Some(hunks) = hunks else {
+        return;
+    };
+    if hunks.is_empty() {
+        return;
+    }
+
+    for hunk in hunks {
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            let button_label = if staged { "−" } else { "+" };
+            let button = ui
+                .small_button(button_label)
+                .on_hover_text(if staged {
+                    "Unstage this hunk"
+                } else {
+                    "Stage this hunk"
+                });
+            if button.clicked() {
+                *action = if staged {
+                    GitPanelAction::UnstageHunk {
+                        path: path.clone(),
+                        hunk: hunk.clone(),
+                    }
+                } else {
+                    GitPanelAction::StageHunk {
+                        path: path.clone(),
+                        hunk: hunk.clone(),
+                    }
+                };
+            }
+
+            let start = hunk.line_start + 1;
+            let end = hunk.line_start + hunk.line_count.max(1);
+            let label = if start == end {
+                format!("{} line {start}", hunk_kind_label(&hunk.kind))
+            } else {
+                format!("{} lines {start}-{end}", hunk_kind_label(&hunk.kind))
+            };
+            ui.label(egui::RichText::new(label).small());
+        });
+    }
+}
+
+fn hunk_kind_label(kind: &HunkKind) -> &'static str {
+    match kind {
+        HunkKind::Modified => "M",
+        HunkKind::Added => "A",
+        HunkKind::Removed => "D",
+    }
 }
 
 fn status_prefix(s: &FileStatus) -> &'static str {
