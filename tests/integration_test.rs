@@ -817,6 +817,22 @@ fn main() {
     println!("Integration test passed: highlighting works on Rust code");
 }
 
+/// Diagnostic helper: sorted distinct section colors as hex, for failure
+/// messages. Assertions below are unchanged; this only improves reports.
+fn distinct_colors(job: &egui::text::LayoutJob) -> Vec<String> {
+    let mut colors: Vec<u32> = job
+        .sections
+        .iter()
+        .map(|s| {
+            let c = s.format.color;
+            ((c.r() as u32) << 16) | ((c.g() as u32) << 8) | c.b() as u32
+        })
+        .collect();
+    colors.sort_unstable();
+    colors.dedup();
+    colors.iter().map(|c| format!("{c:#06x}")).collect()
+}
+
 #[test]
 fn test_highlight_keywords() {
     let code = "fn let if else";
@@ -824,13 +840,18 @@ fn test_highlight_keywords() {
     let font_id = FontId::monospace(14.0);
     let layout = buffer.get_layout(font_id);
 
-    // Keywords should be blue (0x569CD6)
-    let keyword_color = egui::Color32::from_rgb(0x56, 0x9C, 0xD6);
+    // Keywords should use the active theme's keyword color.
+    let keyword_color = blue_ide::theme::default_syntax_palette().keyword;
     let has_keyword = layout
         .sections
         .iter()
         .any(|s| s.format.color == keyword_color);
-    assert!(has_keyword, "Should highlight keywords in blue");
+    assert!(
+        has_keyword,
+        "Should highlight keywords with the theme keyword color; expected {:?}, found colors {:?}",
+        keyword_color,
+        distinct_colors(&layout)
+    );
 }
 
 #[test]
@@ -840,13 +861,18 @@ fn test_highlight_strings() {
     let font_id = FontId::monospace(14.0);
     let layout = buffer.get_layout(font_id);
 
-    // Strings should be orange (0xCE9178)
-    let string_color = egui::Color32::from_rgb(0xCE, 0x91, 0x78);
+    // Strings should use the active theme's string color.
+    let string_color = blue_ide::theme::default_syntax_palette().string;
     let has_string = layout
         .sections
         .iter()
         .any(|s| s.format.color == string_color);
-    assert!(has_string, "Should highlight strings in orange");
+    assert!(
+        has_string,
+        "Should highlight strings with the theme string color; expected {:?}, found colors {:?}",
+        string_color,
+        distinct_colors(&layout)
+    );
 }
 
 #[test]
@@ -856,13 +882,18 @@ fn test_highlight_comments() {
     let font_id = FontId::monospace(14.0);
     let layout = buffer.get_layout(font_id);
 
-    // Comments should be green (0x6A9955)
-    let comment_color = egui::Color32::from_rgb(0x6A, 0x99, 0x55);
+    // Comments should use the active theme's comment color.
+    let comment_color = blue_ide::theme::default_syntax_palette().comment;
     let has_comment = layout
         .sections
         .iter()
         .any(|s| s.format.color == comment_color);
-    assert!(has_comment, "Should highlight comments in green");
+    assert!(
+        has_comment,
+        "Should highlight comments with the theme comment color; expected {:?}, found colors {:?}",
+        comment_color,
+        distinct_colors(&layout)
+    );
 }
 
 #[test]
@@ -872,13 +903,18 @@ fn test_highlight_numbers() {
     let font_id = FontId::monospace(14.0);
     let layout = buffer.get_layout(font_id);
 
-    // Numbers should be light green (0xB5CEA8)
-    let number_color = egui::Color32::from_rgb(0xB5, 0xCE, 0xA8);
+    // Numbers should use the active theme's number color.
+    let number_color = blue_ide::theme::default_syntax_palette().number;
     let has_number = layout
         .sections
         .iter()
         .any(|s| s.format.color == number_color);
-    assert!(has_number, "Should highlight numbers in light green");
+    assert!(
+        has_number,
+        "Should highlight numbers with the theme number color; expected {:?}, found colors {:?}",
+        number_color,
+        distinct_colors(&layout)
+    );
 }
 
 #[test]

@@ -111,6 +111,15 @@ pub fn built_in_theme(selection: Theme, system_scheme: Option<ColorScheme>) -> B
         Theme::Nord => (ColorScheme::Dark, nord()),
         Theme::Dracula => (ColorScheme::Dark, dracula()),
         Theme::SolarizedDark => (ColorScheme::Dark, solarized_dark()),
+        Theme::OneDark => (ColorScheme::Dark, one_dark()),
+        Theme::OneLight => (ColorScheme::Light, one_light()),
+        Theme::AyuDark => (ColorScheme::Dark, ayu_dark()),
+        Theme::AyuMirage => (ColorScheme::Dark, ayu_mirage()),
+        Theme::AyuLight => (ColorScheme::Light, ayu_light()),
+        Theme::GruvboxDark => (ColorScheme::Dark, gruvbox_dark()),
+        Theme::GruvboxLight => (ColorScheme::Light, gruvbox_light()),
+        Theme::CatppuccinMocha => (ColorScheme::Dark, catppuccin_mocha()),
+        Theme::CatppuccinLatte => (ColorScheme::Light, catppuccin_latte()),
         Theme::System => unreachable!("System is always resolved"),
     };
     BuiltInTheme {
@@ -142,8 +151,13 @@ fn rgb(value: u32) -> Color32 {
 }
 
 fn rgba(value: u32, alpha: u8) -> Color32 {
+    // Produce a genuinely premultiplied color: egui's premultiplied API expects
+    // the RGB channels already scaled by alpha. Passing un-premultiplied RGB
+    // makes every translucent theme color far more opaque than intended.
     let color = rgb(value);
-    Color32::from_rgba_premultiplied(color.r(), color.g(), color.b(), alpha)
+    let a = alpha as u32;
+    let premul = |c: u8| (((c as u32) * a + 127) / 255) as u8;
+    Color32::from_rgba_premultiplied(premul(color.r()), premul(color.g()), premul(color.b()), alpha)
 }
 
 fn visuals(scheme: ColorScheme, colors: SemanticPalette) -> Visuals {
@@ -465,6 +479,456 @@ fn solarized_dark() -> ThemePalette {
     )
 }
 
+/// Zed's default dark theme (Atom One Dark family).
+fn one_dark() -> ThemePalette {
+    palette(
+        SemanticPalette {
+            ui_background: rgb(0x21252b),
+            panel_background: rgb(0x21252b),
+            elevated_background: rgb(0x2c313a),
+            editor_background: rgb(0x282c34),
+            primary_text: rgb(0xdcdfe4),
+            muted_text: rgb(0x9da5b4),
+            selection: rgb(0x3e4451),
+            inactive_selection: rgb(0x333842),
+            accent: rgb(0x61afef),
+            border: rgb(0x363c46),
+            error: rgb(0xe06c75),
+            warning: rgb(0xe5c07b),
+            information: rgb(0x61afef),
+            success: rgb(0x98c379),
+            search_match: rgba(0x61afef, 70),
+            active_search_match: rgba(0xe5c07b, 125),
+            current_line: rgb(0x2c313c),
+            completion_function: rgb(0x61afef),
+            completion_type: rgb(0xe5c07b),
+            completion_field: rgb(0x98c379),
+            completion_variable: rgb(0xe06c75),
+            completion_module: rgb(0xd19a66),
+            completion_keyword: rgb(0xc678dd),
+            inlay_type_hint_text: rgb(0x98c379),
+            inlay_type_hint_background: rgba(0x98c379, 28),
+            inlay_parameter_hint_text: rgb(0x9da5b4),
+            inlay_parameter_hint_background: rgba(0x61afef, 22),
+            inlay_hint_border: rgba(0x363c46, 180),
+            hover_code_background: rgb(0x21252b),
+            hover_link: rgb(0x61afef),
+        },
+        SyntaxPalette {
+            default: rgb(0xdcdfe4),
+            comment: rgb(0x5c6370),
+            string: rgb(0x98c379),
+            number: rgb(0xd19a66),
+            keyword: rgb(0xc678dd),
+            type_name: rgb(0xe5c07b),
+            macro_name: rgb(0x56b6c2),
+            lifetime: rgb(0xe06c75),
+            function: rgb(0x61afef),
+            symbol: rgb(0x56b6c2),
+        },
+    )
+}
+
+/// Zed's default light theme (Atom One Light family).
+fn one_light() -> ThemePalette {
+    palette(
+        SemanticPalette {
+            ui_background: rgb(0xf0f0f0),
+            panel_background: rgb(0xf0f0f0),
+            elevated_background: rgb(0xe6e6e6),
+            editor_background: rgb(0xfafafa),
+            primary_text: rgb(0x383a42),
+            muted_text: rgb(0x8b939b),
+            selection: rgb(0xcfe3ff),
+            inactive_selection: rgb(0xe2e6ea),
+            accent: rgb(0x4078f2),
+            border: rgb(0xd0d4d9),
+            error: rgb(0xe45649),
+            warning: rgb(0x986801),
+            information: rgb(0x4078f2),
+            success: rgb(0x50a14f),
+            search_match: rgba(0x4078f2, 60),
+            active_search_match: rgba(0xffd337, 150),
+            current_line: rgb(0xf0f0f1),
+            completion_function: rgb(0x4078f2),
+            completion_type: rgb(0xc18401),
+            completion_field: rgb(0x50a14f),
+            completion_variable: rgb(0xe45649),
+            completion_module: rgb(0x986801),
+            completion_keyword: rgb(0xa626a4),
+            inlay_type_hint_text: rgb(0x50a14f),
+            inlay_type_hint_background: rgba(0x50a14f, 25),
+            inlay_parameter_hint_text: rgb(0x8b939b),
+            inlay_parameter_hint_background: rgba(0x4078f2, 22),
+            inlay_hint_border: rgba(0xd0d4d9, 200),
+            hover_code_background: rgb(0xf0f0f0),
+            hover_link: rgb(0x4078f2),
+        },
+        SyntaxPalette {
+            default: rgb(0x383a42),
+            comment: rgb(0xa0a1a7),
+            string: rgb(0x50a14f),
+            number: rgb(0x986801),
+            keyword: rgb(0xa626a4),
+            type_name: rgb(0xc18401),
+            macro_name: rgb(0x0184bc),
+            lifetime: rgb(0xe45649),
+            function: rgb(0x4078f2),
+            symbol: rgb(0x0184bc),
+        },
+    )
+}
+
+/// Ayu Dark.
+fn ayu_dark() -> ThemePalette {
+    palette(
+        SemanticPalette {
+            ui_background: rgb(0x0b0e14),
+            panel_background: rgb(0x0d1017),
+            elevated_background: rgb(0x131721),
+            editor_background: rgb(0x0b0e14),
+            primary_text: rgb(0xbfbdb6),
+            muted_text: rgb(0x8a9199),
+            selection: rgb(0x27428e),
+            inactive_selection: rgb(0x1a212e),
+            accent: rgb(0xffb454),
+            border: rgb(0x1e2633),
+            error: rgb(0xf07178),
+            warning: rgb(0xffb454),
+            information: rgb(0x59c2ff),
+            success: rgb(0x7fd962),
+            search_match: rgba(0x1d3352, 220),
+            active_search_match: rgba(0xff8f40, 110),
+            current_line: rgb(0x11151c),
+            completion_function: rgb(0xffb454),
+            completion_type: rgb(0x39bae6),
+            completion_field: rgb(0xaad94c),
+            completion_variable: rgb(0xf07178),
+            completion_module: rgb(0xff8f40),
+            completion_keyword: rgb(0xff8f40),
+            inlay_type_hint_text: rgb(0x626a73),
+            inlay_type_hint_background: rgba(0x0b0e14, 0),
+            inlay_parameter_hint_text: rgb(0x626a73),
+            inlay_parameter_hint_background: rgba(0x0b0e14, 0),
+            inlay_hint_border: rgba(0x1e2633, 180),
+            hover_code_background: rgb(0x11151c),
+            hover_link: rgb(0xffb454),
+        },
+        SyntaxPalette {
+            default: rgb(0xbfbdb6),
+            comment: rgb(0x626a73),
+            string: rgb(0xaad94c),
+            number: rgb(0xd2a6ff),
+            keyword: rgb(0xff8f40),
+            type_name: rgb(0x39bae6),
+            macro_name: rgb(0xffb454),
+            lifetime: rgb(0xf07178),
+            function: rgb(0xffb454),
+            symbol: rgb(0xf07178),
+        },
+    )
+}
+
+/// Ayu Mirage.
+fn ayu_mirage() -> ThemePalette {
+    palette(
+        SemanticPalette {
+            ui_background: rgb(0x1f2430),
+            panel_background: rgb(0x1c212b),
+            elevated_background: rgb(0x242936),
+            editor_background: rgb(0x1f2430),
+            primary_text: rgb(0xcbccc6),
+            muted_text: rgb(0x8a9199),
+            selection: rgb(0x2d4674),
+            inactive_selection: rgb(0x28303f),
+            accent: rgb(0xffcc66),
+            border: rgb(0x2a313d),
+            error: rgb(0xf28779),
+            warning: rgb(0xffd173),
+            information: rgb(0x73d0ff),
+            success: rgb(0xaad94c),
+            search_match: rgba(0x2d4f83, 190),
+            active_search_match: rgba(0xff8f40, 110),
+            current_line: rgb(0x242c38),
+            completion_function: rgb(0xffd173),
+            completion_type: rgb(0x73d0ff),
+            completion_field: rgb(0xbae67e),
+            completion_variable: rgb(0xf28779),
+            completion_module: rgb(0xffae57),
+            completion_keyword: rgb(0xffae57),
+            inlay_type_hint_text: rgb(0x5c6773),
+            inlay_type_hint_background: rgba(0x1f2430, 0),
+            inlay_parameter_hint_text: rgb(0x5c6773),
+            inlay_parameter_hint_background: rgba(0x1f2430, 0),
+            inlay_hint_border: rgba(0x2a313d, 180),
+            hover_code_background: rgb(0x262d38),
+            hover_link: rgb(0xffcc66),
+        },
+        SyntaxPalette {
+            default: rgb(0xcbccc6),
+            comment: rgb(0x5c6773),
+            string: rgb(0xbae67e),
+            number: rgb(0xd2a6ff),
+            keyword: rgb(0xffae57),
+            type_name: rgb(0x73d0ff),
+            macro_name: rgb(0xffd173),
+            lifetime: rgb(0xf28779),
+            function: rgb(0xffd173),
+            symbol: rgb(0xf28779),
+        },
+    )
+}
+
+/// Ayu Light.
+fn ayu_light() -> ThemePalette {
+    palette(
+        SemanticPalette {
+            ui_background: rgb(0xf0f1f4),
+            panel_background: rgb(0xf0f1f4),
+            elevated_background: rgb(0xe7e9ee),
+            editor_background: rgb(0xfafafa),
+            primary_text: rgb(0x5c6166),
+            muted_text: rgb(0x8a9199),
+            selection: rgb(0x03295f),
+            inactive_selection: rgb(0xe5e7ec),
+            accent: rgb(0xff9940),
+            border: rgb(0xe3e4e8),
+            error: rgb(0xe6504c),
+            warning: rgb(0xf2ae49),
+            information: rgb(0x399ee6),
+            success: rgb(0x86b300),
+            search_match: rgba(0x55bbf3, 90),
+            active_search_match: rgba(0xffd337, 150),
+            current_line: rgb(0xf1f1f2),
+            completion_function: rgb(0xf2ae49),
+            completion_type: rgb(0x399ee6),
+            completion_field: rgb(0x86b300),
+            completion_variable: rgb(0xe6504c),
+            completion_module: rgb(0xfa8d3e),
+            completion_keyword: rgb(0xfa8d3e),
+            inlay_type_hint_text: rgb(0xabadb1),
+            inlay_type_hint_background: rgba(0xfafafa, 0),
+            inlay_parameter_hint_text: rgb(0xabadb1),
+            inlay_parameter_hint_background: rgba(0xfafafa, 0),
+            inlay_hint_border: rgba(0xe3e4e8, 200),
+            hover_code_background: rgb(0xf0f1f4),
+            hover_link: rgb(0xff9940),
+        },
+        SyntaxPalette {
+            default: rgb(0x5c6166),
+            comment: rgb(0xabadb1),
+            string: rgb(0x86b300),
+            number: rgb(0xa37acc),
+            keyword: rgb(0xfa8d3e),
+            type_name: rgb(0x399ee6),
+            macro_name: rgb(0xf2ae49),
+            lifetime: rgb(0xe6504c),
+            function: rgb(0xf2ae49),
+            symbol: rgb(0xe6504c),
+        },
+    )
+}
+
+/// Gruvbox Dark (hard contrast variant surfaces).
+fn gruvbox_dark() -> ThemePalette {
+    palette(
+        SemanticPalette {
+            ui_background: rgb(0x1d2021),
+            panel_background: rgb(0x1d2021),
+            elevated_background: rgb(0x282828),
+            editor_background: rgb(0x282828),
+            primary_text: rgb(0xebdbb2),
+            muted_text: rgb(0xa89984),
+            selection: rgb(0x504945),
+            inactive_selection: rgb(0x3c3836),
+            accent: rgb(0xfe8019),
+            border: rgb(0x3c3836),
+            error: rgb(0xfb4934),
+            warning: rgb(0xfabd2f),
+            information: rgb(0x83a598),
+            success: rgb(0xb8bb26),
+            search_match: rgba(0x83a598, 90),
+            active_search_match: rgba(0xfe8019, 120),
+            current_line: rgb(0x32302f),
+            completion_function: rgb(0x8ec07c),
+            completion_type: rgb(0xfabd2f),
+            completion_field: rgb(0xb8bb26),
+            completion_variable: rgb(0x83a598),
+            completion_module: rgb(0xfe8019),
+            completion_keyword: rgb(0xfb4934),
+            inlay_type_hint_text: rgb(0x928374),
+            inlay_type_hint_background: rgba(0x282828, 0),
+            inlay_parameter_hint_text: rgb(0x928374),
+            inlay_parameter_hint_background: rgba(0x282828, 0),
+            inlay_hint_border: rgba(0x3c3836, 180),
+            hover_code_background: rgb(0x1d2021),
+            hover_link: rgb(0x83a598),
+        },
+        SyntaxPalette {
+            default: rgb(0xebdbb2),
+            comment: rgb(0x928374),
+            string: rgb(0xb8bb26),
+            number: rgb(0xd3869b),
+            keyword: rgb(0xfb4934),
+            type_name: rgb(0xfabd2f),
+            macro_name: rgb(0x8ec07c),
+            lifetime: rgb(0x83a598),
+            function: rgb(0x8ec07c),
+            symbol: rgb(0xfe8019),
+        },
+    )
+}
+
+/// Gruvbox Light.
+fn gruvbox_light() -> ThemePalette {
+    palette(
+        SemanticPalette {
+            ui_background: rgb(0xebdbb2),
+            panel_background: rgb(0xebdbb2),
+            elevated_background: rgb(0xf2e5bc),
+            editor_background: rgb(0xfbf1c7),
+            primary_text: rgb(0x3c3836),
+            muted_text: rgb(0x7c6f64),
+            selection: rgb(0xd5c4a1),
+            inactive_selection: rgb(0xebdbb2),
+            accent: rgb(0xd65d0e),
+            border: rgb(0xd5c4a1),
+            error: rgb(0x9d0006),
+            warning: rgb(0xb57614),
+            information: rgb(0x076678),
+            success: rgb(0x79740e),
+            search_match: rgba(0x83a598, 120),
+            active_search_match: rgba(0xfe8019, 110),
+            current_line: rgb(0xf2e5bc),
+            completion_function: rgb(0x427b58),
+            completion_type: rgb(0xb57614),
+            completion_field: rgb(0x79740e),
+            completion_variable: rgb(0x076678),
+            completion_module: rgb(0xd65d0e),
+            completion_keyword: rgb(0x9d0006),
+            inlay_type_hint_text: rgb(0x928374),
+            inlay_type_hint_background: rgba(0xfbf1c7, 0),
+            inlay_parameter_hint_text: rgb(0x928374),
+            inlay_parameter_hint_background: rgba(0xfbf1c7, 0),
+            inlay_hint_border: rgba(0xd5c4a1, 200),
+            hover_code_background: rgb(0xebdbb2),
+            hover_link: rgb(0x076678),
+        },
+        SyntaxPalette {
+            default: rgb(0x3c3836),
+            comment: rgb(0x928374),
+            string: rgb(0x79740e),
+            number: rgb(0x8f3f71),
+            keyword: rgb(0x9d0006),
+            type_name: rgb(0xb57614),
+            macro_name: rgb(0x427b58),
+            lifetime: rgb(0x076678),
+            function: rgb(0x427b58),
+            symbol: rgb(0xd65d0e),
+        },
+    )
+}
+
+/// Catppuccin Mocha.
+fn catppuccin_mocha() -> ThemePalette {
+    palette(
+        SemanticPalette {
+            ui_background: rgb(0x181825),
+            panel_background: rgb(0x181825),
+            elevated_background: rgb(0x313244),
+            editor_background: rgb(0x1e1e2e),
+            primary_text: rgb(0xcdd6f4),
+            muted_text: rgb(0x9399b2),
+            selection: rgb(0x41445f),
+            inactive_selection: rgb(0x313244),
+            accent: rgb(0x89b4fa),
+            border: rgb(0x313244),
+            error: rgb(0xf38ba8),
+            warning: rgb(0xfab387),
+            information: rgb(0x89dceb),
+            success: rgb(0xa6e3a1),
+            search_match: rgba(0x89b4fa, 70),
+            active_search_match: rgba(0xfab387, 120),
+            current_line: rgb(0x28283f),
+            completion_function: rgb(0x89b4fa),
+            completion_type: rgb(0xf9e2af),
+            completion_field: rgb(0xa6e3a1),
+            completion_variable: rgb(0xf38ba8),
+            completion_module: rgb(0xfab387),
+            completion_keyword: rgb(0xcba6f7),
+            inlay_type_hint_text: rgb(0x9399b2),
+            inlay_type_hint_background: rgba(0x1e1e2e, 0),
+            inlay_parameter_hint_text: rgb(0x9399b2),
+            inlay_parameter_hint_background: rgba(0x1e1e2e, 0),
+            inlay_hint_border: rgba(0x313244, 180),
+            hover_code_background: rgb(0x181825),
+            hover_link: rgb(0x89b4fa),
+        },
+        SyntaxPalette {
+            default: rgb(0xcdd6f4),
+            comment: rgb(0x6c7086),
+            string: rgb(0xa6e3a1),
+            number: rgb(0xfab387),
+            keyword: rgb(0xcba6f7),
+            type_name: rgb(0xf9e2af),
+            macro_name: rgb(0x94e2d5),
+            lifetime: rgb(0xf38ba8),
+            function: rgb(0x89b4fa),
+            symbol: rgb(0x94e2d5),
+        },
+    )
+}
+
+/// Catppuccin Latte.
+fn catppuccin_latte() -> ThemePalette {
+    palette(
+        SemanticPalette {
+            ui_background: rgb(0xe6e9ef),
+            panel_background: rgb(0xe6e9ef),
+            elevated_background: rgb(0xccd0da),
+            editor_background: rgb(0xeff1f5),
+            primary_text: rgb(0x4c4f69),
+            muted_text: rgb(0x7c7f93),
+            selection: rgb(0xb4bfe4),
+            inactive_selection: rgb(0xccd0da),
+            accent: rgb(0x1e66f5),
+            border: rgb(0xccd0da),
+            error: rgb(0xd20f39),
+            warning: rgb(0xfe640b),
+            information: rgb(0x04a5e5),
+            success: rgb(0x40a02b),
+            search_match: rgba(0x1e66f5, 60),
+            active_search_match: rgba(0xdf8e1d, 110),
+            current_line: rgb(0xe8ebf1),
+            completion_function: rgb(0x1e66f5),
+            completion_type: rgb(0xdf8e1d),
+            completion_field: rgb(0x40a02b),
+            completion_variable: rgb(0xd20f39),
+            completion_module: rgb(0xfe640b),
+            completion_keyword: rgb(0x8839ef),
+            inlay_type_hint_text: rgb(0x8c8fa1),
+            inlay_type_hint_background: rgba(0xeff1f5, 0),
+            inlay_parameter_hint_text: rgb(0x8c8fa1),
+            inlay_parameter_hint_background: rgba(0xeff1f5, 0),
+            inlay_hint_border: rgba(0xccd0da, 200),
+            hover_code_background: rgb(0xe6e9ef),
+            hover_link: rgb(0x1e66f5),
+        },
+        SyntaxPalette {
+            default: rgb(0x4c4f69),
+            comment: rgb(0x8c8fa1),
+            string: rgb(0x40a02b),
+            number: rgb(0xfe640b),
+            keyword: rgb(0x8839ef),
+            type_name: rgb(0xdf8e1d),
+            macro_name: rgb(0x179299),
+            lifetime: rgb(0xd20f39),
+            function: rgb(0x1e66f5),
+            symbol: rgb(0x179299),
+        },
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
@@ -475,7 +939,7 @@ mod tests {
     fn catalog_contains_every_theme_once() {
         let themes = Theme::all();
         let unique: HashSet<_> = themes.iter().copied().collect();
-        assert_eq!(themes.len(), 6);
+        assert_eq!(themes.len(), 15);
         assert_eq!(unique.len(), themes.len());
     }
 
@@ -489,6 +953,27 @@ mod tests {
         assert!(Theme::all().iter().all(|theme| {
             !theme.serialized_id().is_empty() && !theme.display_name().is_empty()
         }));
+    }
+
+    #[test]
+    fn theme_display_names_are_unique() {
+        let names: Vec<&str> = Theme::all().iter().map(|theme| theme.display_name()).collect();
+        let unique: HashSet<_> = names.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "Theme picker must not show two entries with the same display name: {names:?}"
+        );
+    }
+
+    #[test]
+    fn rgba_produces_premultiplied_color() {
+        // rgb(0x74, 0xad, 0xe8) with alpha=64 should be R,G,B premultiplied by 64/255.
+        let color = rgba(0x74ade8, 64);
+        assert_eq!(color.r(), ((0x74u32 * 64 + 127) / 255) as u8);
+        assert_eq!(color.g(), ((0xadu32 * 64 + 127) / 255) as u8);
+        assert_eq!(color.b(), ((0xe8u32 * 64 + 127) / 255) as u8);
+        assert_eq!(color.a(), 64);
     }
 
     #[test]
@@ -512,8 +997,21 @@ mod tests {
             Theme::Nord,
             Theme::Dracula,
             Theme::SolarizedDark,
+            Theme::OneDark,
+            Theme::AyuDark,
+            Theme::AyuMirage,
+            Theme::GruvboxDark,
+            Theme::CatppuccinMocha,
         ] {
             assert!(built_in_theme(theme, None).is_dark());
+        }
+        for theme in [
+            Theme::OneLight,
+            Theme::AyuLight,
+            Theme::GruvboxLight,
+            Theme::CatppuccinLatte,
+        ] {
+            assert!(!built_in_theme(theme, None).is_dark());
         }
     }
 

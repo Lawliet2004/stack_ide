@@ -1,6 +1,6 @@
 # Stack IDE
 
-Stack IDE is a Rust desktop code editor experiment built with `eframe` and `egui`.
+Stack IDE (Blue IDE) is a Rust desktop code editor built with `eframe` and `egui`.
 
 ## Version
 
@@ -15,3 +15,46 @@ cargo run
 ```
 
 Build artifacts, local agent logs, and generated analysis output are intentionally excluded from Git.
+
+## Zed-parity feature highlights
+
+See [`ZED_PARITY_PLAN.md`](ZED_PARITY_PLAN.md) for the full gap analysis and roadmap.
+
+- **Vim mode** — modal editing (normal/insert/visual/visual-line) with motions,
+  operators, text objects, `/`/`?` search, `zz/zt/zb` viewport scrolling, and
+  a `:` command line. Toggle with Ctrl+Alt+V or `editor.vim_mode` in settings
+  (default off).
+- **Theme pack + picker** — One Dark/Light, Ayu, Gruvbox, Catppuccin, Nord,
+  Dracula, Solarized and more; live-preview picker on Ctrl+Alt+T.
+- **AI assistant panel** — Ctrl+Alt+A; pluggable provider via a shell command
+  template (works with `ollama`, `llm`, or any CLI model) with incremental
+  streaming, insert-at-cursor/copy for code blocks, and cancel-on-clear.
+- **Auto save** — off / after delay / on focus change.
+- **Inline diagnostics** — Zed-style end-of-line diagnostic messages.
+- **File-type icons** — in the project tree, tabs, and quick open.
+- Plus: LSP (completion, hover, goto, signature help, code actions, inlay
+  hints, semantic tokens), project search/replace, git suite (blame, stash,
+  tags, conflicts, log, **per-hunk stage/unstage**, commit amend), DAP debug
+  console (start/stop, breakpoints, continue/pause/step, call stack,
+  scopes/variables, output), split terminals with sessions, tasks, Lua plugins,
+  editorconfig, zen mode, and accessibility features.
+
+## Known limitations / intentionally deferred
+
+- LSP `textDocument/didSave` remains **off** (pending explicit approval); auto
+  save still updates git status and dirty markers.
+- Remote/SSH editing is a foundational stub (`src/remote.rs`), not a full SFTP
+  transport.
+- Signed extension marketplace, multibuffers, notebooks/REPL, devcontainers,
+  snippet tab-stops, and real SSH/SFTP transport remain roadmap slices (they
+  need dependency/allowlist approval). SSH is still a documented stub.
+- DAP console is wired as a foundation: launch args come from Settings
+  (`debug.launch_args` JSON), the adapter path is user-supplied, and the
+  breakpoint/call-stack/variables UX uses the active editor cursor. Trust-gated
+  via `ExecutableCapability::Debugger`; it is not yet enabled for full
+  breakpoint rendering in the editor gutter.
+- Executable capabilities (terminals, profiler, tasks, plugins, LSP server
+  spawn, debug adapters) are gated by workspace trust; Git remote operations
+  still use `git2` and are not trust-gated.
+- `cargo clippy --lib -- -D warnings` runs non-blocking until lint debt is
+  cleaned; `cargo fmt --check` likewise surfaces pre-existing formatting drift.

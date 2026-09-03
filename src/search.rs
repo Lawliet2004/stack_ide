@@ -913,12 +913,6 @@ pub fn apply_replacements(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
-
-    #[allow(dead_code)]
-    fn path(s: &str) -> PathBuf {
-        PathBuf::from(s)
-    }
 
     fn query(q: &str, use_regex: bool, case_sensitive: bool) -> SearchQuery {
         SearchQuery {

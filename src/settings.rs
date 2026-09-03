@@ -25,6 +25,52 @@ pub struct Settings {
     pub lsp: LspSettings,
     #[serde(default)]
     pub ui: UiSettings,
+    #[serde(default)]
+    pub assistant: AssistantSettings,
+    #[serde(default)]
+    pub debug: DebugSettings,
+}
+
+/// AI assistant panel configuration. The dependency-free provider pipes the
+/// prompt (plus optional file/selection context) through a user-configured
+/// shell command, e.g. `ollama run llama3.1` or any OpenAI-compatible CLI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssistantSettings {
+    /// Shell command template. Supported placeholders: `{prompt}`, `{file}`,
+    /// `{selection}`, `{language}`. Empty disables the provider.
+    #[serde(default)]
+    pub command: String,
+}
+
+impl Default for AssistantSettings {
+    fn default() -> Self {
+        Self {
+            command: String::new(),
+        }
+    }
+}
+
+/// DAP/debugger configuration. The adapter command is user-supplied so no
+/// specific debugger is hardcoded; the launch request is passed through as-is.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DebugSettings {
+    #[serde(default)]
+    pub adapter_path: String,
+    #[serde(default)]
+    pub adapter_args: Vec<String>,
+    /// Launch-request arguments as a JSON object string (TOML-friendly).
+    #[serde(default)]
+    pub launch_args: String,
+}
+
+impl Default for DebugSettings {
+    fn default() -> Self {
+        Self {
+            adapter_path: String::new(),
+            adapter_args: Vec::new(),
+            launch_args: "{}".to_string(),
+        }
+    }
 }
 
 fn default_version() -> u32 {
@@ -42,6 +88,8 @@ impl Default for Settings {
             panels: PanelSettings::default(),
             lsp: LspSettings::default(),
             ui: UiSettings::default(),
+            assistant: AssistantSettings::default(),
+            debug: DebugSettings::default(),
         }
     }
 }
@@ -122,6 +170,24 @@ pub enum Theme {
     Dracula,
     #[serde(rename = "solarized-dark")]
     SolarizedDark,
+    #[serde(rename = "one-dark")]
+    OneDark,
+    #[serde(rename = "one-light")]
+    OneLight,
+    #[serde(rename = "ayu-dark")]
+    AyuDark,
+    #[serde(rename = "ayu-mirage")]
+    AyuMirage,
+    #[serde(rename = "ayu-light")]
+    AyuLight,
+    #[serde(rename = "gruvbox-dark")]
+    GruvboxDark,
+    #[serde(rename = "gruvbox-light")]
+    GruvboxLight,
+    #[serde(rename = "catppuccin-mocha")]
+    CatppuccinMocha,
+    #[serde(rename = "catppuccin-latte")]
+    CatppuccinLatte,
 }
 
 impl Theme {
@@ -133,17 +199,35 @@ impl Theme {
             Self::Nord => "nord",
             Self::Dracula => "dracula",
             Self::SolarizedDark => "solarized-dark",
+            Self::OneDark => "one-dark",
+            Self::OneLight => "one-light",
+            Self::AyuDark => "ayu-dark",
+            Self::AyuMirage => "ayu-mirage",
+            Self::AyuLight => "ayu-light",
+            Self::GruvboxDark => "gruvbox-dark",
+            Self::GruvboxLight => "gruvbox-light",
+            Self::CatppuccinMocha => "catppuccin-mocha",
+            Self::CatppuccinLatte => "catppuccin-latte",
         }
     }
 
     pub const fn display_name(self) -> &'static str {
         match self {
-            Self::Dark => "One Dark",
-            Self::Light => "One Light",
+            Self::Dark => "Default Dark",
+            Self::Light => "Default Light",
             Self::System => "System",
             Self::Nord => "Nord",
             Self::Dracula => "Dracula",
             Self::SolarizedDark => "Solarized Dark",
+            Self::OneDark => "One Dark",
+            Self::OneLight => "One Light",
+            Self::AyuDark => "Ayu Dark",
+            Self::AyuMirage => "Ayu Mirage",
+            Self::AyuLight => "Ayu Light",
+            Self::GruvboxDark => "Gruvbox Dark",
+            Self::GruvboxLight => "Gruvbox Light",
+            Self::CatppuccinMocha => "Catppuccin Mocha",
+            Self::CatppuccinLatte => "Catppuccin Latte",
         }
     }
 
@@ -152,6 +236,15 @@ impl Theme {
             Self::System,
             Self::Dark,
             Self::Light,
+            Self::OneDark,
+            Self::OneLight,
+            Self::AyuDark,
+            Self::AyuMirage,
+            Self::AyuLight,
+            Self::GruvboxDark,
+            Self::GruvboxLight,
+            Self::CatppuccinMocha,
+            Self::CatppuccinLatte,
             Self::Nord,
             Self::Dracula,
             Self::SolarizedDark,
@@ -198,6 +291,59 @@ pub struct EditorSettings {
     /// Line count at which large file mode activates (default 100 000).
     #[serde(default = "default_large_file_line_mode")]
     pub large_file_line_mode: usize,
+    /// Vim/modal editing (Normal/Insert/Visual). Default off.
+    #[serde(default)]
+    pub vim_mode: bool,
+    /// Auto-save mode: off, after_delay, focus_change.
+    #[serde(default)]
+    pub auto_save: AutoSaveMode,
+    /// Auto-save delay in milliseconds for `after_delay` (default 500).
+    #[serde(default = "default_auto_save_delay_ms")]
+    pub auto_save_delay_ms: u64,
+    /// Render diagnostic messages inline at the end of the line (Zed-style).
+    #[serde(default = "default_inline_diagnostics")]
+    pub inline_diagnostics: bool,
+}
+
+/// When the editor saves dirty buffers automatically.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum AutoSaveMode {
+    /// Never save automatically (default; Ctrl+S still works).
+    #[default]
+    #[serde(rename = "off")]
+    Off,
+    /// Save a dirty buffer once it has been idle for `auto_save_delay_ms`.
+    #[serde(rename = "after_delay")]
+    AfterDelay,
+    /// Save dirty buffers when the editor loses focus.
+    #[serde(rename = "focus_change")]
+    FocusChange,
+}
+
+impl AutoSaveMode {
+    pub const fn serialized_id(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::AfterDelay => "after_delay",
+            Self::FocusChange => "focus_change",
+        }
+    }
+
+    pub const fn display_name(self) -> &'static str {
+        match self {
+            Self::Off => "Off",
+            Self::AfterDelay => "After Delay",
+            Self::FocusChange => "On Focus Change",
+        }
+    }
+
+    pub const fn all() -> &'static [Self] {
+        &[Self::Off, Self::AfterDelay, Self::FocusChange]
+    }
+}
+
+fn default_auto_save_delay_ms() -> u64 {
+    500
 }
 
 /// Settings controlling LSP inlay-hint display.
@@ -253,6 +399,10 @@ fn default_false_setting() -> bool {
     false
 }
 
+fn default_inline_diagnostics() -> bool {
+    true
+}
+
 fn default_tab_width() -> u32 {
     4
 }
@@ -268,6 +418,10 @@ impl Default for EditorSettings {
             insert_spaces: default_insert_spaces(),
             format_on_save: false,
             inlay_hints: InlayHintSettings::default(),
+            auto_save: AutoSaveMode::Off,
+            auto_save_delay_ms: default_auto_save_delay_ms(),
+            inline_diagnostics: true,
+            vim_mode: false,
             show_indent_guides: true,
             sticky_scroll: true,
             sticky_scroll_max_lines: 5,
@@ -586,6 +740,19 @@ impl Settings {
             }
         }
 
+        if self.assistant.command.contains('\0') {
+            errors.push("assistant.command contains NUL character".to_owned());
+        }
+
+        if self.editor.auto_save == AutoSaveMode::AfterDelay
+            && !(50..=3_600_000).contains(&self.editor.auto_save_delay_ms)
+        {
+            errors.push(format!(
+                "editor.auto_save_delay_ms must be between 50 and 3600000 when auto_save is after_delay; found {}",
+                self.editor.auto_save_delay_ms
+            ));
+        }
+
         if errors.is_empty() {
             Ok(())
         } else {
@@ -718,6 +885,19 @@ mod tests {
         let toml = "version = 1";
         let settings: Settings = toml::from_str(toml).unwrap();
         assert_eq!(settings, Settings::default());
+    }
+
+    #[test]
+    fn missing_inline_diagnostics_defaults_to_enabled() {
+        // A settings file written before the field existed must default it to
+        // the same value as the in-memory EditorSettings::default().
+        let toml = "[editor]\n";
+        let settings: Settings = toml::from_str(toml).unwrap();
+        assert_eq!(
+            settings.editor.inline_diagnostics,
+            Settings::default().editor.inline_diagnostics
+        );
+        assert!(settings.editor.inline_diagnostics);
     }
 
     #[test]

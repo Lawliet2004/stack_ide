@@ -1,5 +1,10 @@
 //! Blue IDE library crate: editor, LSP client, search, and application shell.
 //!
+//! egui's drawing types take `f32` many places; Rust's `.0` literals fall back to
+//! `f64` under the newer `float_literal_f32_fallback` lint. This is a deliberate
+//! crate-wide opt-out while the egui-typed literals are migrated explicitly.
+#![allow(float_literal_f32_fallback)]
+//!
 //! # Regression tests
 //!
 //! Checklist-driven regression coverage is split by responsibility across module
@@ -186,13 +191,15 @@
 //! | B4 | Open **File → Settings** (or unsaved-close modal) | Modal blocks completion/hover; Escape or Cancel restores editor (see **Boundaries → Never** §4) |
 
 pub mod app;
+pub mod assistant;
 pub mod color_picker;
-pub mod config;
+pub mod vim;
 pub mod content_error;
 pub mod debug;
 pub mod diff_viewer;
 pub mod editor;
 pub mod editorconfig;
+pub mod file_icons;
 pub mod file_watcher;
 pub mod filetree;
 pub mod git;
@@ -221,11 +228,6 @@ pub mod texture_registry;
 pub mod theme;
 pub mod trust_ui;
 pub mod workspace;
-
-// ─── src/workspace_features/ — Features 1–8 ─────────────────────────────────
-/// Workspace feature modules: session, roots, editorconfig, templates, tasks,
-/// trust, recent, exclude.
-pub mod workspace_features;
 
 pub mod zen_mode;
 

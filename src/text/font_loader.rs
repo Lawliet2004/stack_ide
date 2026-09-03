@@ -46,7 +46,7 @@ fn get_user_font_dir() -> Option<PathBuf> {
 
 /// Attempts to load FiraCode-Regular from embedded bytes.
 fn load_fira_code() -> Option<FontData> {
-    let font_bytes = include_bytes!("../FiraCode-Regular.ttf");
+    let font_bytes = include_bytes!("../../assets/fonts/FiraCode-Regular.ttf");
     Some(FontData::from_owned(font_bytes.to_vec()))
 }
 

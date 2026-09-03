@@ -470,6 +470,7 @@ pub fn render_profiler_panel(
     state: &mut ProfilerState,
     workspace_root: Option<&PathBuf>,
     palette: crate::theme::SemanticPalette,
+    trusted: bool,
 ) -> Option<PathBuf> {
     state.poll();
 
@@ -478,7 +479,8 @@ pub fn render_profiler_panel(
     // ── Toolbar ──────────────────────────────────────────────────────────────
     ui.allocate_ui(egui::vec2(ui.available_width(), TOOLBAR_HEIGHT), |ui| {
         ui.horizontal_centered(|ui| {
-            let can_run = workspace_root.is_some()
+            let can_run = trusted
+                && workspace_root.is_some()
                 && !matches!(state.status, ProfilerStatus::Running { .. });
 
             if ui.add_enabled(can_run, egui::Button::new("▶ Run Profile")).clicked() {

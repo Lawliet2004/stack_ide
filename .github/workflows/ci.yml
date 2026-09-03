@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check (lib + tests)
+        run: |
+          set -o pipefail
+          cargo check --lib --tests 2>&1 | tee /tmp/check.log
+      - name: cargo test (library suite)
+        run: |
+          set -o pipefail
+          cargo test --lib --no-run 2>&1 | tee /tmp/libbuild.log
+          cargo test --lib 2>&1 | tee /tmp/lib.log
+      - name: cargo test (integration guards)
+        run: |
+          set -o pipefail
+          cargo test --test integration_test 2>&1 | tee /tmp/it.log
+      - name: surface failure names as annotations
+        if: failure()
+        run: |
+          emit() { while IFS= read -r line; do echo "::error title=ci::$line"; done; }
+          for log in /tmp/check.log /tmp/libbuild.log /tmp/lib.log /tmp/it.log; do
+            [ -f "$log" ] || continue
+            sed 's/\x1b\[[0-9;]*m//g' "$log" > /tmp/plain.log
+            # Priority 1: rustc errors with locations (4 annotations).
+            grep -E -A2 "^error(\[E[0-9]+\])?:|^error: " /tmp/plain.log | head -12 | emit
+            # Priority 2: failing test names from the failures block (8).
+            grep -E "^failures:$" -A 20 /tmp/plain.log | grep -E "^    [a-zA-Z_:]+" | head -8 | emit
+            # Priority 3: crash / kill evidence (2).
+            grep -iE "signal [0-9]|sigkill|sigsegv|killed|out of memory" /tmp/plain.log | head -2 | emit
+          done
+          exit 0
+      - name: report failure details as PR comment
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        continue-on-error: true
+        run: |
+          {
+            echo "CI failure report for ${GITHUB_SHA::7}"
+            for log in /tmp/check.log /tmp/libbuild.log /tmp/lib.log /tmp/it.log; do
+              [ -f "$log" ] || continue
+              echo "=== ${log} ==="
+              sed 's/\x1b\[[0-9;]*m//g' "$log" |
+                grep -E "panicked at|^---- |assertion|left:|right:|^error(\[|:)|test result:|^failures:|signal|killed" -A 3 |
+                head -150
+            done
+          } > /tmp/report.md
+          gh pr comment "$PR_NUMBER" --body-file /tmp/report.md
+      - name: cargo fmt
+        run: cargo fmt --check
+        continue-on-error: true
+      # Non-blocking until the tree's clippy debt (unused fns, collapsible ifs,
+      # &PathBuf, manual maps, etc.) is cleaned up; see FIX_PLAN Phase 5.3.
+      - name: cargo clippy
+        run: |
+          set -o pipefail
+          cargo clippy --lib -- -D warnings 2>&1 | tee /tmp/clippy.log
+        continue-on-error: true
+      - name: report clippy warnings to PR
+        if: github.event_name == 'pull_request' && always()
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -s /tmp/clippy.log ]; then
+            {
+              echo "Clippy output (non-blocking). Run with -D warnings once these are cleared."
+              sed 's/\x1b\[[0-9;]*m//g' /tmp/clippy.log |
+                grep -E "warning:|^error" -A 3 | head -200
+            } > /tmp/clippy-report.md
+            gh pr comment "$PR_NUMBER" --body-file /tmp/clippy-report.md || true
+          fi

@@ -58,6 +58,10 @@ pub struct GitRepo {
     pub root: PathBuf,
     pub branch: String,
     pub file_diffs: HashMap<PathBuf, Vec<DiffHunk>>,
+    /// Hunks that are currently in the index (HEAD vs index).
+    pub staged_diffs: HashMap<PathBuf, Vec<DiffHunk>>,
+    /// Hunks that are currently unstaged (index vs working tree).
+    pub unstaged_diffs: HashMap<PathBuf, Vec<DiffHunk>>,
     pub status_map: HashMap<PathBuf, FileStatus>,
     /// Paths that are currently staged in the index. Kept in sync by `refresh`.
     pub staged_paths: HashSet<PathBuf>,
@@ -80,6 +84,8 @@ impl GitRepo {
             root,
             branch,
             file_diffs: HashMap::new(),
+            staged_diffs: HashMap::new(),
+            unstaged_diffs: HashMap::new(),
             status_map: HashMap::new(),
             staged_paths: HashSet::new(),
             dirty: true,
@@ -111,11 +117,21 @@ impl GitRepo {
             }
         }
 
-        // 3. Refresh diffs for open buffers against HEAD.
+        // 3. Refresh diffs for open buffers against HEAD, the index (staged),
+        // and the working tree (unstaged). The staged/unstaged split is what
+        // drives per-hunk staging in the git panel.
         self.file_diffs.clear();
+        self.staged_diffs.clear();
+        self.unstaged_diffs.clear();
         for (path, text) in open_buffers {
             let hunks = diff::diff_file_against_head(&self.repo, path, text);
             self.file_diffs.insert(path.clone(), hunks);
+
+            let staged = diff::diff_index_against_head(&self.repo, path);
+            self.staged_diffs.insert(path.clone(), staged);
+
+            let unstaged = diff::diff_file_against_index(&self.repo, path, text);
+            self.unstaged_diffs.insert(path.clone(), unstaged);
         }
 
         self.dirty = false;
@@ -131,6 +147,26 @@ impl GitRepo {
         // index.write() saves the updated index state back to the disk's .git/index file.
         index.write()?;
         Ok(())
+    }
+
+    /// Stage one hunk of `path` using the current working-tree content.
+    pub fn stage_hunk(
+        &self,
+        path: &PathBuf,
+        text: &str,
+        hunk: &DiffHunk,
+    ) -> Result<(), git2::Error> {
+        diff::stage_hunk(&self.repo, path, text, hunk)
+    }
+
+    /// Unstage one hunk of `path`, reverting it in the index to HEAD.
+    pub fn unstage_hunk(
+        &self,
+        path: &PathBuf,
+        text: &str,
+        hunk: &DiffHunk,
+    ) -> Result<(), git2::Error> {
+        diff::unstage_hunk(&self.repo, path, text, hunk)
     }
 
     /// Unstage a file by resetting the index entry to the HEAD tree.
@@ -160,6 +196,24 @@ impl GitRepo {
         self.repo
             .commit(Some("HEAD"), &sig, &sig, message, &tree, &parents)?;
         Ok(())
+    }
+
+    /// Amend the current HEAD commit with the staged index and a new message.
+    pub fn amend(&self, message: &str) -> Result<(), git2::Error> {
+        let mut index = self.repo.index()?;
+        let tree_oid = index.write_tree()?;
+        let tree = self.repo.find_tree(tree_oid)?;
+        let sig = self.repo.signature()?;
+        let head = self.repo.head()?.peel_to_commit()?;
+        head.amend(
+            Some("HEAD"),
+            Some(&sig),
+            Some(&sig),
+            None,
+            Some(message),
+            Some(&tree),
+        )
+        .map(|_| ())
     }
 
     /// List all local branch names.
@@ -342,4 +396,59 @@ fn map_status(s: git2::Status) -> FileStatus {
 /// True for statuses that have an index entry (staged changes).
 fn is_index_status(s: git2::Status) -> bool {
     s.is_index_new() || s.is_index_modified() || s.is_index_deleted() || s.is_index_renamed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_repo(name: &str) -> (std::path::PathBuf, GitRepo) {
+        let dir = std::env::temp_dir().join(format!(
+            "blue_ide_git_mod_{name}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = Repository::init(&dir).unwrap();
+        let mut cfg = repo.config().unwrap();
+        cfg.set_str("user.name", "Test").unwrap();
+        cfg.set_str("user.email", "test@example.com").unwrap();
+        drop(cfg);
+        let git = GitRepo::open(&dir).unwrap();
+        (dir, git)
+    }
+
+    fn commit_file(repo: &Repository, dir: &Path, name: &str, content: &str, message: &str) {
+        let path = dir.join(name);
+        std::fs::write(&path, content).unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new(name)).unwrap();
+        index.write().unwrap();
+        let tree_id = index.write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let sig = repo.signature().unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[])
+            .unwrap();
+    }
+
+    #[test]
+    fn amend_replaces_head_message_and_content() {
+        let (dir, git) = temp_repo("amend");
+        commit_file(&git.repo, &dir, "a.txt", "one\n", "initial");
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        git.stage_file(&dir.join("a.txt")).unwrap();
+        git.amend("amended").unwrap();
+
+        let head = git.repo.head().unwrap().peel_to_commit().unwrap();
+        assert_eq!(head.message().map(str::trim), Some("amended"));
+        let tree = head.tree().unwrap();
+        let entry = tree.get_path(std::path::Path::new("a.txt")).unwrap();
+        let blob = git.repo.find_blob(entry.id()).unwrap();
+        assert_eq!(blob.content(), b"one\ntwo\n");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
