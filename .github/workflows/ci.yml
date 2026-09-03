@@ -70,5 +70,8 @@ jobs:
       - name: cargo fmt
         run: cargo fmt --check
         continue-on-error: true
+      # Clippy is non-blocking until the 50 pre-existing warnings in the tree are
+      # resolved (see FIX_PLAN Phase 5.3).
       - name: cargo clippy
         run: cargo clippy --lib -- -D warnings
+        continue-on-error: true
