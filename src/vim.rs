@@ -640,7 +640,7 @@ impl VimState {
                     col: (cursor.col + count).min(line_len.saturating_sub(1)),
                 };
                 self.pending = None;
-                self.finish_motion_operator(buffer, op, cursor, target, true, options);
+                self.finish_motion_operator(buffer, op, cursor, target, false, options);
             }
             'j' | 'k' => {
                 let line = if ch == 'j' {
